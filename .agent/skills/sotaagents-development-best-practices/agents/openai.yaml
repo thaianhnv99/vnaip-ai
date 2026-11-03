@@ -1,0 +1,4 @@
+interface:
+  display_name: 'SotaAgents Development'
+  short_description: 'Build robust SotaAgents apps correctly'
+  default_prompt: 'Use $sotaagents-development-best-practices to implement this SotaAgents app change safely.'

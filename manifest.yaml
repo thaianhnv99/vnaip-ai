@@ -1,0 +1,43 @@
+manifestSchemaVersion: 3
+appId: vnaip-dedup
+version: 1.0.0
+displayName: "VNAIP Dedup"
+description: "Kiểm tra hồ sơ ứng viên tương tự trong hệ thống VNAIP."
+publisher:
+  id: local-dev
+  displayName: "Local Dev"
+  contact: dev@local-dev.example
+
+contributes:
+  skills: []
+  tools:
+    - name: check-duplicates
+      description: >-
+        Kiểm tra mức độ tương đồng giữa một hồ sơ đầu vào (ví dụ: giải pháp)
+        và các hồ sơ ứng viên mà caller được phép truy cập trong VNAIP.
+        Trả về danh sách ứng viên đã được model đánh giá kèm điểm số 0..1
+        và lý do. Gọi tool này trước khi tạo hồ sơ mới để tránh trùng lặp.
+        Caller chịu trách nhiệm diễn giải điểm số; đây không phải kết luận
+        trùng lặp cuối cùng.
+      route: POST /tools/check-duplicates
+      inputSchema: src/schemas/dedup-input.schema.json
+      outputSchema: src/schemas/dedup-output.schema.json
+      timeoutMs: 15000
+      failure_mode: abort
+
+service:
+  baseUrl: https://ai-portfolio-project-bujz.onrender.com
+health:
+  url: https://ai-portfolio-project-bujz.onrender.com/health
+  intervalSeconds: 60
+environments:
+  local:
+    service:
+      baseUrl: http://localhost:8787
+    health:
+      url: http://localhost:8787/health
+  stg: 
+    service:
+      baseUrl: https://ai-portfolio-project-bujz.onrender.com
+    health:
+      url: https://ai-portfolio-project-bujz.onrender.com/health

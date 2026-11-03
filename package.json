@@ -1,0 +1,33 @@
+{
+  "name": "vnaip-dedup",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:sota": "sota dev",
+    "lint": "sota validate",
+    "deploy": "sota deploy",
+    "dev:backend": "tsx watch src/backend/server.ts",
+    "build:backend": "tsc -p tsconfig.backend.json",
+    "start": "node dist/backend/server.js",
+    "build": "tsc -p tsconfig.backend.json",
+    "dev": "tsx watch src/backend/server.ts",
+    "typecheck": "tsc -p tsconfig.backend.json --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.backend.tests.json --noEmit",
+    "test": "tsx --test src/backend/__tests__/*.test.ts"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "jose": "^6.2.3",
+    "dotenv": "^17.2.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

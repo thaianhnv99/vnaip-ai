@@ -1,0 +1,10 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-bf-4a7299b9-d9aa-4450-a8ae-2025b4cec39a",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:3817/anthropic",
+    "ANTHROPIC_MODEL": "fridayaix/claude-sonnet-5-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "fridayaix/claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "fridayaix/claude-sonnet-5-5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "fridayaix/claude-haiku-5-5"
+  }
+}

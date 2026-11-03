@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 2,
+  "files": {
+    "agents/openai.yaml": "fb781d8ccbe42d7d8658afd117fb7560ef5eb330c4c82fa23169775505a4989b",
+    "references/architecture-and-project-layout.md": "8af9372974b361698b9a30e539dbbc207d8a1d63430d396d7dc475aa7897983c",
+    "references/backend-and-auth.md": "0e4d26352d1f93b9d7dbc299c929c0789ac32660f44bbb46c48135135cf32845",
+    "references/cli-development-and-release.md": "56164ebdbe22090e55c45e93e53b664cd463231ed0fa248449203d2970afd81a",
+    "references/composer-panels-and-input.md": "c50ef4e8d957c049551f21cfb1ba2ef8a42dc26effbb32607b2002cc903a8a6b",
+    "references/data-files-events-and-jobs.md": "58ea76d796cb590f6773a61f074d3a72c301279e35582dfdd2e0820aad0f919e",
+    "references/frontend-native-ui.md": "36d86b85ff3f0e969544fa9f23d2da465ca7846bfd442dfc0194a07c79f7ecd8",
+    "references/manifest.md": "cca756443028392628827be1649556519dd206e35d865cdeafd35850066cb32e",
+    "references/security-and-tenancy.md": "bbc7319f7be37fd2da2b6489ce67f6c7a68652c67c3a661ad9faf300107ade1e",
+    "references/system-app-patterns.md": "62e42a49b3bb97a904fba6268cde7f335c4adf7301f5bae427a2eac8a01c230b",
+    "references/testing-and-observability.md": "f7bca9cf5c60dff58fa9c2f42387b46fb7a2fecae8aae59f146866cc7fca5122",
+    "references/tool-input-streaming-surfaces.md": "6bf83d012d7d083fe7eb6632ce93430f41dd4f571cf0e63e289a444196de42d2",
+    "references/tools-skills-and-agent-design.md": "b509977bd6636487cdad63acb1e38fa817283ff36c750ad6f26ba2fa0ea2ecb5",
+    "references/troubleshooting.md": "f078860637b791ad4eefbb339578ca23bddfbd3c09fcbf22f2e4e8c62fd8dedc",
+    "SKILL.md": "37cef3fa9e867fa20d405d233424ece8c498ed2976b6ccfd834072e1d581dfcc"
+  },
+  "preserved": {}
+}

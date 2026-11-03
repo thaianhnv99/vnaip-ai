@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vnaip-dedup.invalid/schemas/dedup-output.schema.json",
+  "title": "CheckDuplicatesOutput",
+  "description": "Danh sách ứng viên đã được model đánh giá độ tương đồng với hồ sơ đầu vào. Percent (0..100, integer) là giá trị chuẩn do model sinh ra, dùng trực tiếp để hiển thị badge; score (0..1) được suy ra từ percent (score = percent / 100), giữ lại để tương thích phía dùng thang 0..1. Cả hai không phải xác suất hiệu chỉnh và không phải kết luận trùng lặp cuối cùng. UNRESOLVED: ngưỡng hiển thị/số kết quả tối đa chưa được xác nhận bởi nghiệp vụ; hiện trả toàn bộ kết quả đã chấm, đã sắp xếp giảm dần theo percent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["matches"],
+  "properties": {
+    "matches": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "id", "score", "percent", "reason"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Loại hồ sơ của ứng viên, lấy từ dữ liệu VNAIP đã xác thực — không lấy từ output model.",
+            "enum": ["solution"]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "ID ứng viên, phải thuộc danh sách do VNAIP BE trả về."
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Ước lượng độ tương đồng do model sinh ra, thang 0 (không liên quan) đến 1 (rất giống). Luôn bằng percent / 100 — percent là giá trị chuẩn do model sinh ra, score chỉ là dạng suy ra để tương thích phía dùng thang 0..1. Không phải xác suất chắc chắn hoặc kết luận trùng lặp cuối cùng."
+          },
+          "percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Ước lượng độ tương đồng do model sinh ra, thang 0 (không liên quan) đến 100 (rất giống), dùng trực tiếp để hiển thị badge (ví dụ \"80% - Rất giống\"). Đây là giá trị chuẩn; score được suy ra từ percent (score = percent / 100), không phải ngược lại. Không phải xác suất chắc chắn hoặc kết luận trùng lặp cuối cùng."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Giải thích ngắn gọn do model sinh ra cho điểm số."
+          }
+        }
+      }
+    }
+  }
+}

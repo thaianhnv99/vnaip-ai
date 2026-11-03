@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vnaip-dedup.invalid/schemas/dedup-input.schema.json",
+  "title": "CheckDuplicatesInput",
+  "description": "Hồ sơ đầu vào cần kiểm tra trùng lặp. UNRESOLVED: danh sách type hợp lệ và việc parentSolutionId có bắt buộc hay không chưa được xác nhận bởi nghiệp vụ VNAIP thật; giá trị hiện tại là giả định tạm, cần rà soát trước khi phát hành.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "title", "content"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Loại hồ sơ. UNRESOLVED: enum tạm, cần xác nhận danh sách type thật từ VNAIP.",
+      "enum": ["solution"]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "description": "Tiêu đề hồ sơ đầu vào."
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000,
+      "description": "Nội dung mô tả hồ sơ đầu vào. Được xử lý như dữ liệu không đáng tin cậy, không phải chỉ dẫn, khi đưa vào model chấm điểm."
+    },
+    "excludeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "ID hồ sơ cần loại khỏi danh sách ứng viên (ví dụ: khi kiểm tra trùng cho một hồ sơ đang sửa). UNRESOLVED: giả định là một ID duy nhất, chưa xác nhận có cần hỗ trợ nhiều ID."
+    },
+    "parentSolutionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "ID hồ sơ cha, dùng để giới hạn phạm vi tìm ứng viên nếu nghiệp vụ yêu cầu. UNRESOLVED: vai trò và tính bắt buộc chưa được xác nhận."
+    }
+  }
+}
