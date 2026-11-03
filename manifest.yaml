@@ -38,6 +38,6 @@ environments:
       url: http://localhost:8787/health
   stg: 
     service:
-      baseUrl: https://ai-portfolio-project-bujz.onrender.com
+      baseUrl: https://vnaip-dedup.onrender.com
     health:
-      url: https://ai-portfolio-project-bujz.onrender.com/health
+      url: https://vnaip-dedup.onrender.com/health
