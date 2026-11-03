@@ -48,28 +48,26 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
   response.status(500).json({ code: 'APP_ERROR', message: 'Request failed' });
 });
 
-const expectedPort = 8787;
-const port = Number(process.env.PORT ?? expectedPort);
+const defaultLocalPort = 8787;
+const port = Number(process.env.PORT ?? defaultLocalPort);
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   log('error', 'server_failed', { appId, message: 'PORT must be an integer from 1 to 65535' });
   process.exitCode = 1;
-} else if (port !== expectedPort) {
-  log('error', 'server_failed', {
-    appId,
-    message: 'PORT must match the manifest local service port ' + expectedPort,
-  });
-  process.exitCode = 1;
 } else {
-  const server = app.listen(port, 'localhost');
+  // Bind 0.0.0.0 so hosting platforms (e.g. Render) can detect the open port.
+  // The manifest's environments.local.service.baseUrl still points at
+  // localhost:8787 for local dev; in hosted environments the platform sets
+  // PORT and that value is what we must honor.
+  const server = app.listen(port, '0.0.0.0');
   server.once('listening', () => {
-    log('info', 'server_started', { appId, url: `http://localhost:${port}` });
+    log('info', 'server_started', { appId, url: `http://0.0.0.0:${port}` });
   });
   server.once('error', (error: NodeJS.ErrnoException) => {
     log('error', 'server_failed', {
       appId,
       code: error.code,
       message: error.message,
-      url: `http://localhost:${port}`,
+      url: `http://0.0.0.0:${port}`,
     });
     process.exitCode = 1;
   });
