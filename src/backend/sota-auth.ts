@@ -1,5 +1,5 @@
-import type { RequestHandler } from 'express';
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
+import type { RequestHandler } from "express";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
 export type InvocationClaims = JWTPayload & {
   iid: string;
@@ -8,25 +8,35 @@ export type InvocationClaims = JWTPayload & {
   scp: string[];
 };
 
-const coreOrigin = new URL(process.env.SOTA_CORE_ORIGIN ?? 'https://api.v4.stg.sotaagents.ai');
-const jwks = createRemoteJWKSet(new URL('/.well-known/jwks.json', coreOrigin));
+const coreOrigin = new URL(
+  process.env.SOTA_CORE_ORIGIN ?? "https://api.v4.sotaagents.ai",
+);
+const jwks = createRemoteJWKSet(new URL("/.well-known/jwks.json", coreOrigin));
 
-export function requireSotaInvocation(appId: string, scope: string): RequestHandler {
+export function requireSotaInvocation(
+  appId: string,
+  scope: string,
+): RequestHandler {
   return async (request, response, next) => {
-    const token = /^Bearer\s+(.+)$/i.exec(request.header('authorization') ?? '')?.[1];
+    const token = /^Bearer\s+(.+)$/i.exec(
+      request.header("authorization") ?? "",
+    )?.[1];
     if (!token) {
-      response.status(401).json({ code: 'AUTH_ERROR', message: 'Missing invocation token' });
+      response
+        .status(401)
+        .json({ code: "AUTH_ERROR", message: "Missing invocation token" });
       return;
     }
     try {
       const { payload } = await jwtVerify(token, jwks, {
-        issuer: 'sota/invocation-token',
+        issuer: "sota/invocation-token",
         audience: appId,
-        algorithms: ['EdDSA'],
-        typ: 'sota-invocation+jwt',
+        algorithms: ["EdDSA"],
+        typ: "sota-invocation+jwt",
         clockTolerance: 30,
       });
       assertClaims(payload, scope);
+      logAcceptedClaims(payload, scope);
       response.locals.sota = payload;
       next();
     } catch (error) {
@@ -35,23 +45,33 @@ export function requireSotaInvocation(appId: string, scope: string): RequestHand
       // no global WebCrypto — and the caller sees the same dead end for all of
       // them. The reason goes to your logs together with the token's own header
       // and claims; the HTTP body carries the reason but never the token.
-      const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      console.error(JSON.stringify({
-        event: 'invocation_token_rejected',
-        reason,
-        received: describeToken(token),
-        expected: { issuer: 'sota/invocation-token', audience: appId, scope },
-      }));
-      response.status(401).json({ code: 'AUTH_ERROR', message: `Invalid invocation token — ${reason}` });
+      const reason =
+        error instanceof Error
+          ? `${error.name}: ${error.message}`
+          : String(error);
+      console.error(
+        JSON.stringify({
+          event: "invocation_token_rejected",
+          reason,
+          received: describeToken(token),
+          expected: { issuer: "sota/invocation-token", audience: appId, scope },
+        }),
+      );
+      response.status(401).json({
+        code: "AUTH_ERROR",
+        message: `Invalid invocation token — ${reason}`,
+      });
     }
   };
 }
 
 /** Header and claims of an UNVERIFIED token, for diagnosis only. */
 function describeToken(token: string) {
-  const [header, claims] = token.split('.', 2).map((segment) => {
+  const [header, claims] = token.split(".", 2).map((segment) => {
     try {
-      return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8')) as JsonRecord;
+      return JSON.parse(
+        Buffer.from(segment, "base64url").toString("utf8"),
+      ) as JsonRecord;
     } catch {
       return null;
     }
@@ -70,11 +90,40 @@ function describeToken(token: string) {
 
 type JsonRecord = Record<string, unknown>;
 
-function assertClaims(payload: JWTPayload, scope: string): asserts payload is InvocationClaims {
-  if (![payload.iid, payload.oid, payload.wid].every(
-    (value) => typeof value === 'string' && value.length > 0,
-  )) throw new Error('Token is missing tenant claims (iid, oid, wid must all be non-empty)');
+/**
+ * Tạm thời, chỉ bật khi LOG_VERIFIED_CLAIMS=true: ghi claims ĐÃ XÁC THỰC của
+ * mỗi lời gọi hợp lệ để biết claim nào nhận diện được service account của
+ * VNAIP BE. Allow-list từng trường, không bao giờ ghi token.
+ */
+function logAcceptedClaims(payload: InvocationClaims, scope: string) {
+  if (process.env.LOG_VERIFIED_CLAIMS !== "true") return;
+  const { iss, aud, sub, iid, oid, wid, scp, exp, iat } = payload;
+  console.log(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: "info",
+      event: "invocation_accepted",
+      requiredScope: scope,
+      claims: { iss, aud, sub, iid, oid, wid, scp, ae: payload.ae, exp, iat },
+    }),
+  );
+}
+
+function assertClaims(
+  payload: JWTPayload,
+  scope: string,
+): asserts payload is InvocationClaims {
+  if (
+    ![payload.iid, payload.oid, payload.wid].every(
+      (value) => typeof value === "string" && value.length > 0,
+    )
+  )
+    throw new Error(
+      "Token is missing tenant claims (iid, oid, wid must all be non-empty)",
+    );
   if (!Array.isArray(payload.scp) || !payload.scp.includes(scope)) {
-    throw new Error(`Token scopes ${JSON.stringify(payload.scp ?? null)} do not include the required "${scope}"`);
+    throw new Error(
+      `Token scopes ${JSON.stringify(payload.scp ?? null)} do not include the required "${scope}"`,
+    );
   }
 }

@@ -62,6 +62,7 @@ async function signToken(
     wid: string;
     iid: string;
     expiresInSeconds: number;
+    sub: string;
   }> = {},
 ) {
   const {
@@ -73,9 +74,10 @@ async function signToken(
     wid = 'ws-1',
     iid = 'install-1',
     expiresInSeconds = 60,
+    sub,
   } = overrides;
 
-  return new SignJWT({ oid, wid, iid, scp })
+  return new SignJWT({ oid, wid, iid, scp, ...(sub ? { sub } : {}) })
     .setProtectedHeader({ alg: 'EdDSA', kid, typ })
     .setIssuer(issuer)
     .setAudience(audience)
@@ -124,6 +126,48 @@ test('JWT hợp lệ với scope đúng đi qua middleware và set response.loca
   } finally {
     core.server.close();
   }
+});
+
+async function runAcceptedCall(cacheBustKey: string, logFlag: string | undefined) {
+  const core = await setupFakeCore();
+  process.env.SOTA_CORE_ORIGIN = core.origin;
+  const { requireSotaInvocation } = await importFreshSotaAuth(cacheBustKey);
+  const token = await signToken(core.privateKey, core.kid, { sub: 'svc-account-1' });
+  const { request, response } = fakeRequestResponse(token);
+
+  const originalLog = console.log;
+  const lines: string[] = [];
+  console.log = (line: unknown) => {
+    lines.push(String(line));
+  };
+  if (logFlag === undefined) delete process.env.LOG_VERIFIED_CLAIMS;
+  else process.env.LOG_VERIFIED_CLAIMS = logFlag;
+
+  try {
+    await requireSotaInvocation('vnaip-dedup', 'tool:check-duplicates')(request, response, () => {});
+  } finally {
+    console.log = originalLog;
+    delete process.env.LOG_VERIFIED_CLAIMS;
+    core.server.close();
+  }
+  return { lines, token };
+}
+
+test('LOG_VERIFIED_CLAIMS=true ghi claims đã xác thực và không ghi token', async () => {
+  const { lines, token } = await runAcceptedCall('log-claims-on', 'true');
+
+  const record = JSON.parse(lines.find((line) => line.includes('invocation_accepted')) ?? 'null');
+  assert.equal(record.claims.sub, 'svc-account-1');
+  assert.equal(record.claims.oid, 'org-1');
+  assert.equal(record.claims.wid, 'ws-1');
+  assert.deepEqual(record.claims.scp, ['tool:check-duplicates']);
+  assert.equal(lines.join('\n').includes(token), false);
+});
+
+test('không đặt LOG_VERIFIED_CLAIMS thì không ghi claims của lời gọi hợp lệ', async () => {
+  const { lines } = await runAcceptedCall('log-claims-off', undefined);
+
+  assert.equal(lines.some((line) => line.includes('invocation_accepted')), false);
 });
 
 test('thiếu Bearer token trả 401 AUTH_ERROR', async () => {
