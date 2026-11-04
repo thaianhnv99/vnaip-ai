@@ -209,7 +209,32 @@ Trạng thái (2026-11-04): phần mã và test xong. 255 test (248 đạt, 7 b�
 | Worker chết nhưng web vẫn trả 202 | GĐ2, GĐ5 | Job dồn trong Redis; `noeviction` nên khi Redis đầy thì publish lỗi và webhook trả 503. Cần theo dõi độ sâu hàng đợi và tuổi job cũ nhất (GĐ5) |
 | Cache BE trả kết quả cũ | GĐ4 | Thống nhất chính sách hết hạn với BE |
 
-## 10. Việc chưa kiểm tra
+## 10. TODO: input chưa được embedding khi check-duplicates (cần xem lại)
+
+Ghi lại ngày 2026-11-05 sau khi rà code để trả lời câu hỏi "input A có được embed trước khi so sánh/chấm điểm không".
+
+**Hiện trạng xác nhận qua code:**
+
+- Khi gọi tool `check-duplicates`, nội dung input (title/content của ý tưởng A) **không được embed**. Route (`check-duplicates-route.ts`) chỉ dùng `DEFAULT_EMBEDDING_DIMENSIONS` (hằng số `1536`) để khai báo kích thước collection Qdrant, không gọi hàm `embed()` nào cho input.
+- Luồng thật: `candidate-source.ts` gọi `store.scrollAll()` lấy **toàn bộ** chunk đã index (`with_vector: false`, không lấy vector về), gom theo `ideaId` thành candidate dạng text thuần, rồi `llm-scorer.ts` gửi text thô của input A cùng text thô của từng candidate cho LLM so sánh. Không có bước tính cosine similarity nào trong luồng đọc.
+- `embed()` (trong `openrouter-embeddings.ts`) hiện chỉ được gọi ở luồng **index** (`index-job.ts:73-75`, chạy trong worker khi có webhook thêm/sửa ý tưởng) để tạo vector lưu vào Qdrant. Vector này đang "nằm chờ", chưa ai đọc lại để search.
+- Đây là thiết kế có chủ đích ("hướng A", xem quyết định #2 ở mục 3.2 dòng 79 và hệ quả dòng 96-97), không phải lỗi/thiếu sót của code.
+
+**Vì sao cần xem lại:**
+
+- Hướng A gửi toàn bộ candidate cho LLM mỗi lần gọi → chi phí token và độ trễ tăng theo số sáng kiến. Đã có trần `CHECK_DUPLICATES_CANDIDATE_LIMIT` (mặc định 100, tối đa 500) để báo lỗi khi vượt quá, thay vì cắt ngầm và bỏ sót (xem quyết định #13, dòng 90). Đây chính là tín hiệu chuyển sang "hướng B".
+- "Hướng B" (dùng Qdrant làm vector search thật: embed input A, tìm top-k gần nhất trước khi đưa cho LLM) sẽ nhanh hơn nhưng **đánh đổi độ chính xác**:
+  - Rủi ro false negative ở bước lọc vector: ý tưởng trùng thật nhưng diễn đạt khác nhiều có thể bị loại trước khi LLM thấy, không có cách sửa lại sau đó. Hướng A hiện tại không có rủi ro này vì gửi hết.
+  - Có file PDF đính kèm sẽ làm rủi ro này nặng hơn: nội dung dài, nhiều phần, "ý tưởng cốt lõi" dễ bị pha loãng khi tính embedding theo toàn file; nên nếu chuyển hướng B cần so theo **từng chunk nhỏ** (lấy max similarity giữa các chunk của A và candidate), không nên gộp một vector cho cả file.
+  - Nếu chuyển hướng B, nên lấy top-k **rộng** (ví dụ top 100-200, không phải top 10-20) để giảm rủi ro bỏ sót, và vẫn luôn để LLM chấm lại trên text gốc — vector chỉ dùng để rút gọn, không thay thế LLM.
+
+**Việc cần làm khi quay lại sửa:**
+
+- [ ] Quyết định ngưỡng số sáng kiến thực tế để chuyển từ hướng A sang hướng B (đo bằng dữ liệu và model thật, xem "Điểm mở còn lại" mục 3.2 dòng 107 và rủi ro mục 9 dòng 204).
+- [ ] Nếu chuyển sang hướng B: thêm bước embed input A trong `check-duplicates-route.ts`/`dedup.ts`, thêm hàm `search`/`query` bằng vector vào `qdrant-store.ts` (hiện chưa có, xem mục 4 dòng 132), quyết định `k` và ngưỡng similarity.
+- [ ] Thiết kế cách embed/so khớp riêng cho nội dung PDF đính kèm (chunk nhỏ + max similarity) để không bỏ sót trùng lặp khi nội dung dài.
+
+## 11. Việc chưa kiểm tra
 
 - Client OpenRouter và Qdrant đã chạy thật ở GĐ1 và GĐ2 (embedding, tạo, ghi, đọc, xoá trên collection tạm). Chưa thử tải lớn (nhiều nghìn point), giới hạn tốc độ hay độ trễ khi scroll toàn bộ collection theo hướng A.
 - Chưa biết claim nào của token nhận diện được service account của BE (cần log `invocation_accepted` từ Staging). Claim này giờ dùng để giới hạn ai được gọi tool.
