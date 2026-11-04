@@ -4,6 +4,7 @@ import { createHmac } from "node:crypto";
 import express from "express";
 import type { Server } from "node:http";
 import { createErrorHandler } from "../error-handler.js";
+import { MAX_BATCH_SIZE } from "../index-event.js";
 import { createIndexJobHandler, type IndexJob } from "../index-job.js";
 import { InMemoryJobQueue, type JobQueue } from "../job-queue.js";
 import { createMockEmbedder } from "../openrouter-embeddings.js";
@@ -240,7 +241,9 @@ test("event sai định dạng trả 400 và không enqueue", async () => {
 
     const { id: _omitted, ...withoutId } = validEvent;
     assert.equal((await t.post(withoutId)).status, 400);
-    assert.equal((await t.post([validEvent])).status, 400);
+    assert.equal((await t.post([])).status, 400);
+    assert.equal((await t.post("text")).status, 400);
+    assert.equal((await t.post(null)).status, 400);
 
     await t.queue.drain();
     assert.equal(t.logs.some((entry) => entry.event === "webhook_accepted"), false);
@@ -368,6 +371,269 @@ test("loadWebhookHmacSecrets: tách dấu phẩy, yêu cầu có secret và đ�
     { WEBHOOK_HMAC_SECRETS: `${SECRET_1},ngan` },
   ]) {
     assert.throws(() => loadWebhookHmacSecrets(env), WebhookConfigError);
+  }
+});
+
+// ------------------------------------------------------- body dạng mảng (batch)
+
+const batchEvents = [
+  { ...validEvent, id: "GP-A", title: "Tiêu đề A", content: "Nội dung của GP-A." },
+  { ...validEvent, id: "GP-B", title: "Tiêu đề B", content: "Nội dung của GP-B." },
+  { ...validEvent, id: "GP-C", title: "Tiêu đề C", content: "Nội dung của GP-C." },
+];
+
+test("mảng event hợp lệ: 202 kèm danh sách job theo đúng thứ tự, mọi sáng kiến được index", async () => {
+  const published: IndexJob[] = [];
+  const queue: JobQueue<IndexJob> = {
+    publish: async (job) => void published.push(job),
+    startConsuming: async () => ({ stop: async () => undefined }),
+  };
+  const t = await setup({ queue });
+  try {
+    const response = await t.post(batchEvents);
+    const body = (await response.json()) as {
+      status: string;
+      count: number;
+      jobs: Array<{ id: string; jobId: string }>;
+    };
+
+    assert.equal(response.status, 202);
+    assert.equal(body.status, "accepted");
+    assert.equal(body.count, 3);
+    assert.deepEqual(body.jobs.map((job) => job.id), ["GP-A", "GP-B", "GP-C"]);
+    assert.equal(new Set(body.jobs.map((job) => job.jobId)).size, 3);
+    assert.deepEqual(body.jobs.map((job) => job.jobId), published.map((job) => job.jobId));
+    assert.deepEqual(published.map((job) => job.ideaId), ["GP-A", "GP-B", "GP-C"]);
+    assert.equal(t.logs.filter((entry) => entry.event === "webhook_accepted").length, 3);
+  } finally {
+    await t.close();
+  }
+
+  // Cùng mảng đó qua hàng đợi thật (worker trong bộ nhớ): cả ba vào store.
+  const real = await setup();
+  try {
+    assert.equal((await real.post(batchEvents)).status, 202);
+    await real.queue.drain();
+    const ids = new Set((await real.store.scrollAll()).points.map((p) => p.payload.ideaId));
+    assert.deepEqual([...ids].sort(), ["GP-A", "GP-B", "GP-C"]);
+  } finally {
+    await real.close();
+  }
+});
+
+test("mảng một phần tử vẫn trả dạng danh sách; object đơn giữ nguyên dạng cũ { status, jobId }", async () => {
+  const t = await setup();
+  try {
+    const single = (await (await t.post(validEvent)).json()) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(single).sort(), ["jobId", "status"]);
+
+    const one = (await (await t.post([{ ...validEvent, id: "GP-ONE" }])).json()) as {
+      count: number;
+      jobs: unknown[];
+    } & Record<string, unknown>;
+    assert.equal(one.count, 1);
+    assert.equal(one.jobs.length, 1);
+    assert.equal("jobId" in one, false);
+  } finally {
+    await t.close();
+  }
+});
+
+test("mảng có một phần tử sai: 400 nêu chỉ số, không enqueue phần tử nào và không giữ chỗ replay", async () => {
+  const published: IndexJob[] = [];
+  const queue: JobQueue<IndexJob> = {
+    publish: async (job) => void published.push(job),
+    startConsuming: async () => ({ stop: async () => undefined }),
+  };
+  const claims: string[] = [];
+  const spyGuard: ReplayGuard = {
+    claim: async (key) => {
+      claims.push(key);
+      return true;
+    },
+    release: async () => undefined,
+  };
+  const t = await setup({ queue, replayGuard: spyGuard });
+  try {
+    const cases: Array<[unknown[], string]> = [
+      [[batchEvents[0], { ...batchEvents[1], title: "GIA-TRI-NHAY-CAM", content: "" }], "[1]"],
+      [[batchEvents[0], "không phải object"], "[1]"],
+      [[batchEvents[0], null], "[1]"],
+      [[batchEvents[0], [batchEvents[1]]], "[1]"],
+      [[{ ...batchEvents[0], fileRef: 123 }, batchEvents[1]], "[0]"],
+    ];
+    for (const [body, indexLabel] of cases) {
+      const response = await t.post(body);
+      assert.equal(response.status, 400);
+      const error = (await response.json()) as { code: string; message: string };
+      assert.equal(error.code, "INVALID_EVENT");
+      assert.ok(error.message.includes(indexLabel), `thiếu ${indexLabel} trong: ${error.message}`);
+      assert.equal(error.message.includes("GIA-TRI-NHAY-CAM"), false);
+    }
+    assert.equal(published.length, 0);
+    assert.deepEqual(claims, []);
+  } finally {
+    await t.close();
+  }
+});
+
+test("mảng rỗng hoặc vượt MAX_BATCH_SIZE bị từ chối; đúng MAX_BATCH_SIZE được nhận", async () => {
+  const t = await setup();
+  try {
+    const make = (count: number) =>
+      Array.from({ length: count }, (_value, index) => ({ ...validEvent, id: `GP-N${index}` }));
+
+    const empty = await t.post([]);
+    assert.equal(empty.status, 400);
+    assert.equal(((await empty.json()) as { code: string }).code, "INVALID_EVENT");
+
+    const tooMany = await t.post(make(MAX_BATCH_SIZE + 1));
+    assert.equal(tooMany.status, 400);
+    assert.equal(((await tooMany.json()) as { code: string }).code, "INVALID_EVENT");
+
+    const atLimit = await t.post(make(MAX_BATCH_SIZE));
+    assert.equal(atLimit.status, 202);
+    assert.equal(((await atLimit.json()) as { count: number }).count, MAX_BATCH_SIZE);
+  } finally {
+    await t.close();
+  }
+});
+
+test("mảng: một chữ ký cho cả request, gửi lại nguyên mảng thì 409 và không enqueue lại", async () => {
+  const published: IndexJob[] = [];
+  const queue: JobQueue<IndexJob> = {
+    publish: async (job) => void published.push(job),
+    startConsuming: async () => ({ stop: async () => undefined }),
+  };
+  const claims: string[] = [];
+  const guard = new InMemoryReplayGuard();
+  const spyGuard: ReplayGuard = {
+    claim: async (key, ttl) => {
+      claims.push(key);
+      return guard.claim(key, ttl);
+    },
+    release: (key) => guard.release(key),
+  };
+  const t = await setup({ queue, replayGuard: spyGuard });
+  try {
+    const raw = JSON.stringify(batchEvents);
+    const headers = signatureHeaders(SECRET_1, raw, Math.floor(Date.now() / 1000));
+
+    assert.equal((await t.postUnsigned(raw, headers, true)).status, 202);
+    assert.equal(claims.length, 1); // một lần giữ chỗ cho cả 3 phần tử
+    assert.equal(published.length, 3);
+
+    const replay = await t.postUnsigned(raw, headers, true);
+    assert.equal(replay.status, 409);
+    assert.equal(((await replay.json()) as { code: string }).code, "DUPLICATE_DELIVERY");
+    assert.equal(published.length, 3);
+  } finally {
+    await t.close();
+  }
+});
+
+test("mảng: chữ ký sai vẫn 401 trước khi đụng tới nội dung mảng", async () => {
+  const t = await setup();
+  try {
+    const raw = JSON.stringify(batchEvents);
+    const wrong = signatureHeaders(
+      "secret-sai-nhung-du-dai-00000000",
+      raw,
+      Math.floor(Date.now() / 1000),
+    );
+    assert.equal((await t.postUnsigned(raw, wrong, true)).status, 401);
+    assert.equal((await t.postUnsigned(raw, {}, true)).status, 401);
+    await t.queue.drain();
+    assert.equal((await t.store.scrollAll()).points.length, 0);
+  } finally {
+    await t.close();
+  }
+});
+
+test("mảng: cùng `id` hai lần thì phần tử sau ghi đè phần tử trước (giữ thứ tự mảng)", async () => {
+  const t = await setup();
+  try {
+    const response = await t.post([
+      { ...validEvent, id: "GP-DUP", content: "Bản cũ." },
+      { ...validEvent, id: "GP-OTHER", content: "Sáng kiến khác." },
+      { ...validEvent, id: "GP-DUP", content: "Bản mới." },
+    ]);
+    assert.equal(response.status, 202);
+    await t.queue.drain();
+
+    const contents = new Map(
+      (await t.store.scrollAll()).points.map((point) => [point.payload.ideaId, point.payload.content]),
+    );
+    assert.equal(contents.get("GP-DUP"), "Bản mới.");
+    assert.equal(contents.get("GP-OTHER"), "Sáng kiến khác.");
+  } finally {
+    await t.close();
+  }
+});
+
+test("mảng: đồng hồ ghi job chỉ đọc một lần, mọi job cùng receivedAt", async () => {
+  const published: IndexJob[] = [];
+  const queue: JobQueue<IndexJob> = {
+    publish: async (job) => void published.push(job),
+    startConsuming: async () => ({ stop: async () => undefined }),
+  };
+  const fixed = new Date("2020-01-01T00:00:00Z");
+  let nowCalls = 0;
+  const t = await setup({
+    queue,
+    now: () => {
+      nowCalls += 1;
+      return fixed;
+    },
+  });
+  try {
+    assert.equal((await t.post(batchEvents)).status, 202);
+    assert.equal(nowCalls, 1);
+    assert.deepEqual(
+      published.map((job) => job.receivedAt),
+      batchEvents.map(() => fixed.toISOString()),
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("mảng: enqueue lỗi giữa chừng thì 503, trả chỗ replay; gửi lại cả mảng được nhận đủ", async () => {
+  const published: IndexJob[] = [];
+  let calls = 0;
+  const flakyQueue: JobQueue<IndexJob> = {
+    publish: async (job) => {
+      calls += 1;
+      if (calls === 2) throw new Error("broker mất kết nối chứa MARKER-SECRET");
+      published.push(job);
+    },
+    startConsuming: async () => ({ stop: async () => undefined }),
+  };
+  const t = await setup({ queue: flakyQueue });
+  try {
+    const raw = JSON.stringify(batchEvents);
+    const headers = signatureHeaders(SECRET_1, raw, Math.floor(Date.now() / 1000));
+
+    const failed = await t.postUnsigned(raw, headers, true);
+    assert.equal(failed.status, 503);
+    assert.equal(((await failed.json()) as { code: string }).code, "QUEUE_UNAVAILABLE");
+    assert.deepEqual(published.map((job) => job.ideaId), ["GP-A"]); // chỉ phần tử đầu vào được
+    assert.equal(t.logs.some((entry) => entry.event === "webhook_accepted"), false);
+    const failure = t.logs.find((entry) => entry.event === "webhook_enqueue_failed");
+    assert.equal(failure?.ideaId, "GP-B");
+    assert.equal(failure?.enqueued, 1);
+    assert.equal(failure?.batchSize, 3);
+    assert.equal(JSON.stringify(t.logs).includes("MARKER-SECRET"), false);
+
+    // Chỗ replay đã được trả: gửi lại đúng request đó được nhận, rồi mới bị chặn.
+    assert.equal((await t.postUnsigned(raw, headers, true)).status, 202);
+    assert.deepEqual(
+      published.map((job) => job.ideaId),
+      ["GP-A", "GP-A", "GP-B", "GP-C"], // GP-A vào hai lần: chấp nhận được vì index idempotent
+    );
+    assert.equal((await t.postUnsigned(raw, headers, true)).status, 409);
+  } finally {
+    await t.close();
   }
 });
 

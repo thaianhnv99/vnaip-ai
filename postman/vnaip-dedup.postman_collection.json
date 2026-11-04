@@ -94,6 +94,82 @@
       ]
     },
     {
+      "name": "Webhook idea-approved - mang event (202)",
+      "request": {
+        "description": "Body la MANG event (toi da 50 phan tu), mot chu ky cho ca request. Response: count + jobs[{id, jobId}] dung thu tu mang. Mot phan tu sai thi ca mang bi 400 va khong phan tu nao duoc nhan.",
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Webhook-Timestamp", "value": "{{webhookTimestamp}}" },
+          { "key": "X-Webhook-Signature", "value": "{{webhookSignature}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "[\n  {\n    \"id\": \"idea-batch-001\",\n    \"type\": \"initiative\",\n    \"title\": \"Sang kien batch 1\",\n    \"content\": \"Noi dung sang kien dau tien trong mang.\"\n  },\n  {\n    \"id\": \"idea-batch-002\",\n    \"type\": \"initiative\",\n    \"title\": \"Sang kien batch 2\",\n    \"content\": \"Noi dung sang kien thu hai trong mang.\",\n    \"metadata\": { \"author\": \"tester\" }\n  }\n]"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/idea-approved",
+          "host": ["{{baseUrl}}"],
+          "path": ["webhooks", "idea-approved"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', () => pm.response.to.have.status(202));",
+              "pm.test('count va jobs dung thu tu mang', () => {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.status).to.eql('accepted');",
+              "  pm.expect(body.count).to.eql(2);",
+              "  pm.expect(body.jobs.map((job) => job.id)).to.eql(['idea-batch-001', 'idea-batch-002']);",
+              "  body.jobs.forEach((job) => pm.expect(job.jobId).to.be.a('string'));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhook idea-approved - mang co phan tu sai (400)",
+      "request": {
+        "description": "Phan tu [1] thieu content: ca mang bi 400 INVALID_EVENT, message neu chi so phan tu, khong phan tu nao duoc nhan (ke ca phan tu [0] hop le).",
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Webhook-Timestamp", "value": "{{webhookTimestamp}}" },
+          { "key": "X-Webhook-Signature", "value": "{{webhookSignature}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "[\n  {\n    \"id\": \"idea-batch-003\",\n    \"type\": \"initiative\",\n    \"title\": \"Phan tu hop le\",\n    \"content\": \"Noi dung.\"\n  },\n  {\n    \"id\": \"idea-batch-004\",\n    \"type\": \"initiative\",\n    \"title\": \"Phan tu thieu content\"\n  }\n]"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/idea-approved",
+          "host": ["{{baseUrl}}"],
+          "path": ["webhooks", "idea-approved"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));",
+              "pm.test('INVALID_EVENT neu chi so phan tu', () => {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.code).to.eql('INVALID_EVENT');",
+              "  pm.expect(body.message).to.include('[1]');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "Webhook idea-approved - sai chu ky (401)",
       "request": {
         "description": "Timestamp hop le (do pre-request cap collection dat) nhung signature co dinh sai, de kiem tra 401.",

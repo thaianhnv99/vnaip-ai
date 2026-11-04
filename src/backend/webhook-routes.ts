@@ -1,7 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import express from "express";
 import type { Express, Request, RequestHandler, Response } from "express";
-import { IndexEventError, parseIndexEvent } from "./index-event.js";
+import { IndexEventError, parseIndexEvents } from "./index-event.js";
 import type { IndexJob, JobLogger } from "./index-job.js";
 import type { JobQueue } from "./job-queue.js";
 import type { ReplayGuard } from "./replay-guard.js";
@@ -18,6 +18,10 @@ import type { ReplayGuard } from "./replay-guard.js";
  *   2. `express.raw`: đọc body nguyên bytes (mọi content-type, tối đa BODY_LIMIT).
  *   3. `handleIdeaApproved`: HMAC trên đúng bytes đó → content-type JSON →
  *      parse JSON → validate event → chống replay → enqueue.
+ *
+ * Body là một event (object) hoặc một mảng event. Chữ ký, chống replay và giới
+ * hạn 1MB áp dụng cho cả request, không theo từng phần tử; mảng được kiểm tra
+ * trọn vẹn trước khi enqueue phần tử nào.
  *
  * Không có tenant: mọi sáng kiến vào chung một tập dữ liệu (bỏ `datasetKey`,
  * 2026-11-04). Route chỉ đẩy job vào hàng đợi rồi trả 202; việc index do worker
@@ -222,19 +226,24 @@ function handleIdeaApproved(deps: WebhookDependencies, log: JobLogger): RequestH
       return;
     }
 
-    let job: IndexJob;
+    // Cả mảng được kiểm tra xong rồi mới giữ chỗ replay hay enqueue: một phần tử
+    // sai thì không phần tử nào được nhận.
+    let jobs: IndexJob[];
+    let batch: boolean;
     try {
-      const event = parseIndexEvent(payload);
-      job = {
+      const parsed = parseIndexEvents(payload);
+      batch = parsed.batch;
+      const receivedAtIso = receivedAt.toISOString();
+      jobs = parsed.events.map((event) => ({
         jobId: (deps.newJobId ?? randomUUID)(),
         ideaId: event.ideaId,
         type: event.type,
         title: event.title,
         content: event.content,
         metadata: event.metadata,
-        receivedAt: receivedAt.toISOString(),
+        receivedAt: receivedAtIso,
         ...(event.fileRef !== undefined ? { fileRef: event.fileRef } : {}),
-      };
+      }));
     } catch (error) {
       if (error instanceof IndexEventError) {
         response.status(400).json({ code: error.code, message: error.message });
@@ -264,28 +273,54 @@ function handleIdeaApproved(deps: WebhookDependencies, log: JobLogger): RequestH
       return;
     }
 
+    // Enqueue lần lượt đúng thứ tự mảng: worker chạy tuần tự FIFO nên cùng một
+    // `id` xuất hiện hai lần trong mảng thì phần tử sau ghi đè phần tử trước,
+    // giống hai request riêng gửi nối tiếp.
+    let enqueued = 0;
     try {
-      await deps.queue.publish(job);
+      for (const job of jobs) {
+        await deps.queue.publish(job);
+        enqueued += 1;
+      }
     } catch (error) {
+      const failed = jobs[enqueued]!;
       log("error", "webhook_enqueue_failed", {
         requestId,
-        jobId: job.jobId,
-        ideaId: job.ideaId,
+        jobId: failed.jobId,
+        ideaId: failed.ideaId,
+        enqueued,
+        batchSize: jobs.length,
         errorName: error instanceof Error ? error.name : "unknown",
       });
       // Event chưa được nhận nên trả chỗ, để gửi lại đúng request này vẫn được.
+      // Mảng có thể đã vào hàng đợi một phần (broker không có giao dịch nhiều job
+      // trong giao diện JobQueue); gửi lại cả mảng vẫn an toàn vì index theo `id`
+      // là idempotent: các phần tử đã vào hàng đợi chỉ bị index lại cùng nội dung.
       await deps.replayGuard.release(replayKey).catch(() => undefined);
       response.status(503).json(queueUnavailable);
       return;
     }
 
-    log("info", "webhook_accepted", {
-      requestId,
-      jobId: job.jobId,
-      ideaId: job.ideaId,
-      hasFileRef: job.fileRef !== undefined,
-    });
-    response.status(202).json({ status: "accepted", jobId: job.jobId });
+    for (const job of jobs) {
+      log("info", "webhook_accepted", {
+        requestId,
+        jobId: job.jobId,
+        ideaId: job.ideaId,
+        hasFileRef: job.fileRef !== undefined,
+        batchSize: jobs.length,
+      });
+    }
+    if (batch) {
+      // `id` là mã sáng kiến BE tự gửi (không nhạy cảm), trả lại để BE đối chiếu
+      // từng phần tử với `jobId` mà không phải dựa vào vị trí.
+      response.status(202).json({
+        status: "accepted",
+        count: jobs.length,
+        jobs: jobs.map((job) => ({ id: job.ideaId, jobId: job.jobId })),
+      });
+      return;
+    }
+    response.status(202).json({ status: "accepted", jobId: jobs[0]!.jobId });
   };
 }
 

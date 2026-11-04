@@ -23,6 +23,8 @@ X-Webhook-Signature: sha256=bd5e9977e83e7fe106ee5e8787553a8f6620f99847f1fd15d489
 
 Body tối đa 1MB. Trường lạ (kể cả `datasetKey` cũ) bị bỏ qua.
 
+Body là **một event (object)** hoặc **một mảng event** (xem mục 2.1). Bảng dưới là hợp đồng của **một event**, mỗi phần tử của mảng cũng theo đúng bảng này.
+
 | Trường | Yêu cầu |
 |---|---|
 | `id` | Bắt buộc. Chuỗi không rỗng, tối đa 200 ký tự, **duy nhất trong toàn VNAIP**. Gửi lại cùng `id` là cập nhật sáng kiến đó, không tạo bản mới |
@@ -31,6 +33,29 @@ Body tối đa 1MB. Trường lạ (kể cả `datasetKey` cũ) bị bỏ qua.
 | `content` | Bắt buộc. Chuỗi không rỗng, tối đa 200.000 ký tự |
 | `metadata` | Tuỳ chọn. Object, tối đa 10.000 byte khi serialize |
 | `fileRef` | Tuỳ chọn. Chuỗi không rỗng hoặc object, tối đa 2.000 byte. **Hiện chưa được xử lý** (chờ MinIO); gửi cũng được, hệ thống chỉ index `title` và `content` |
+
+### 2.1. Gửi nhiều event trong một request (mảng)
+
+Thay vì một object, body có thể là mảng object, ví dụ để gửi bù hàng loạt:
+
+```
+POST /webhooks/idea-approved
+Content-Type: application/json
+X-Webhook-Timestamp: 1730000000
+X-Webhook-Signature: sha256=<chữ ký của đúng chuỗi body này>
+
+[
+  {"id":"GP-1","type":"solution","title":"Tiêu đề 1","content":"Nội dung 1"},
+  {"id":"GP-2","type":"solution","title":"Tiêu đề 2","content":"Nội dung 2"}
+]
+```
+
+- **Tối đa 50 phần tử**, mảng rỗng bị từ chối. Giới hạn body 1MB tính cho **cả mảng**, nên mảng nhiều sáng kiến dài có thể chạm 1MB trước khi đủ 50 phần tử (chia nhỏ mảng nếu gặp `413`).
+- **Tất cả hoặc không gì cả khi kiểm tra dữ liệu**: chỉ cần một phần tử sai là cả request bị `400 INVALID_EVENT` và **không phần tử nào** được nhận. Message nêu chỉ số phần tử (bắt đầu từ 0), ví dụ `Phần tử [1]: Trường title bắt buộc và phải là chuỗi không rỗng`.
+- **Một chữ ký cho cả request**: ký đúng chuỗi bytes của cả mảng (mục 3), không ký từng phần tử. Chống replay cũng tính theo cả request: gửi lại nguyên mảng (cùng chữ ký) thì nhận `409`.
+- **Thứ tự được giữ**: các phần tử được xếp hàng theo đúng thứ tự trong mảng và xử lý tuần tự. Nếu cùng một `id` xuất hiện hai lần trong mảng thì phần tử sau ghi đè phần tử trước. Nên tránh, mỗi `id` chỉ cần gửi bản mới nhất.
+- Mảng một phần tử vẫn là mảng: response theo dạng mảng (mục 4), không phải dạng của object đơn.
+- Object đơn vẫn dùng được y như trước, response không đổi.
 
 ## 3. Cách ký
 
@@ -74,9 +99,10 @@ Mọi response đều là JSON.
 
 | Mã | `code` | Ý nghĩa | BE nên làm |
 |---|---|---|---|
-| `202` | (không có), body `{"status":"accepted","jobId":"..."}` | Đã nhận, sẽ index nền | Xong. `jobId` chỉ để đối chiếu log |
+| `202` | (không có), body `{"status":"accepted","jobId":"..."}` | Đã nhận object đơn, sẽ index nền | Xong. `jobId` chỉ để đối chiếu log |
+| `202` | (không có), body `{"status":"accepted","count":2,"jobs":[{"id":"GP-1","jobId":"..."},{"id":"GP-2","jobId":"..."}]}` | Đã nhận cả mảng, sẽ index nền. `jobs` cùng thứ tự với mảng đã gửi | Xong. `jobId` chỉ để đối chiếu log |
 | `409` | `DUPLICATE_DELIVERY` | Request (cùng chữ ký) đã được nhận trước đó | Coi như đã nhận, **không** coi là lỗi |
-| `400` | `INVALID_EVENT` | Event thiếu hoặc sai trường (message nêu tên trường, không lặp lại giá trị) | Sửa dữ liệu, không retry nguyên văn |
+| `400` | `INVALID_EVENT` | Event thiếu hoặc sai trường, hoặc mảng rỗng/quá 50 phần tử (message nêu tên trường và chỉ số phần tử nếu là mảng, không lặp lại giá trị) | Sửa dữ liệu, không retry nguyên văn. Với mảng, chưa phần tử nào được nhận |
 | `400` | `BAD_REQUEST` | Body không phải JSON hợp lệ hoặc rỗng | Sửa request |
 | `401` | `AUTH_ERROR` | Chữ ký hoặc timestamp không hợp lệ | Kiểm tra secret, cách ký, định dạng và độ lệch timestamp (mục 3) |
 | `413` | `PAYLOAD_TOO_LARGE` | Body vượt 1MB | Rút gọn nội dung |
@@ -90,6 +116,7 @@ Response `401` cố ý không cho biết sai ở đâu (secret, timestamp hay bo
 
 - Retry chỉ với `503` (và lỗi mạng/timeout), dùng backoff tăng dần, mỗi lần ký lại.
 - Index theo `id` là idempotent: gửi lại cùng event không nhân đôi dữ liệu.
+- Với mảng, `503` có thể xảy ra khi **một phần** mảng đã vào hàng đợi. Cứ retry **cả mảng** (ký lại): phần tử đã vào hàng đợi chỉ bị index lại cùng nội dung, không nhân đôi dữ liệu. Không cần và không nên tự cắt phần đã gửi, vì response `503` không cho biết phần tử nào đã vào.
 - **Giữ đúng thứ tự cho cùng một `id`.** Event đến sau ghi đè event đến trước. Nếu một sáng kiến được cập nhật liên tiếp và bản cũ đang chờ retry thì đừng retry bản cũ sau khi đã gửi bản mới, nếu không bản cũ sẽ ghi đè bản mới.
 - Hệ thống xử lý event tuần tự từng cái; hiện chưa có rate limit nhưng cũng đừng gửi dồn dập hàng loạt.
 
@@ -256,6 +283,7 @@ Với ngôn ngữ khác (C#, PHP, Go...), chỉ cần làm đúng ba bước ở
 5. Gửi event thiếu `title` → nhận `400 INVALID_EVENT`.
 6. Retry của BE ký lại với timestamp mới ở mỗi lần gửi.
 7. BE đã ngừng gửi `x-api-key` và không còn dùng API key cũ.
+8. (Nếu dùng mảng) Gửi mảng 2 event hợp lệ → nhận `202` với `count: 2` và `jobs` đúng thứ tự; gửi mảng có một phần tử thiếu `title` → nhận `400` nêu đúng chỉ số và không phần tử nào được index.
 
 ## 7. Chuyển đổi từ API key cũ
 

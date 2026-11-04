@@ -10,7 +10,7 @@
     "type": {
       "type": "string",
       "description": "Loại hồ sơ; chỉ so với các sáng kiến cùng loại. UNRESOLVED: enum tạm, cần xác nhận danh sách type thật từ VNAIP.",
-      "enum": ["solution"]
+      "enum": ["solution", "initiative", "project", "other"]
     },
     "title": {
       "type": "string",

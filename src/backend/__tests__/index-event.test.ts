@@ -2,9 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   IndexEventError,
+  MAX_BATCH_SIZE,
   MAX_CONTENT_LENGTH,
   MAX_TITLE_LENGTH,
   parseIndexEvent,
+  parseIndexEvents,
 } from "../index-event.js";
 
 const valid = {
@@ -82,6 +84,62 @@ test("body không phải object bị từ chối", () => {
   for (const body of [undefined, null, "text", 5, [valid]]) {
     rejects(body, "object");
   }
+});
+
+function rejectsBatch(body: unknown, messagePart: string) {
+  assert.throws(
+    () => parseIndexEvents(body),
+    (error: unknown) =>
+      error instanceof IndexEventError &&
+      error.code === "INVALID_EVENT" &&
+      error.message.includes(messagePart),
+  );
+}
+
+test("parseIndexEvents: object đơn là batch=false, mảng là batch=true và giữ thứ tự", () => {
+  const single = parseIndexEvents(valid);
+  assert.equal(single.batch, false);
+  assert.deepEqual(single.events, [parseIndexEvent(valid)]);
+
+  const list = parseIndexEvents([valid, { ...valid, id: "GP-2" }, { ...valid, id: "GP-3" }]);
+  assert.equal(list.batch, true);
+  assert.deepEqual(list.events.map((event) => event.ideaId), ["GP-2026-0022", "GP-2", "GP-3"]);
+
+  // Mảng một phần tử vẫn là batch: dạng response do kiểu body quyết định.
+  assert.equal(parseIndexEvents([valid]).batch, true);
+});
+
+test("parseIndexEvents: mỗi phần tử theo đúng luật của một event (trường lạ bỏ qua, metadata mặc định)", () => {
+  const [event] = parseIndexEvents([{ ...valid, datasetKey: "workspace-7", extra: 1 }]).events;
+  assert.equal("datasetKey" in event!, false);
+  assert.equal("extra" in event!, false);
+  assert.deepEqual(event!.metadata, {});
+});
+
+test("parseIndexEvents: body không phải object/mảng, mảng rỗng, mảng quá dài bị từ chối", () => {
+  for (const body of [undefined, null, "text", 5, true]) {
+    rejectsBatch(body, "object");
+  }
+  rejectsBatch([], "rỗng");
+  rejectsBatch(Array.from({ length: MAX_BATCH_SIZE + 1 }, () => valid), String(MAX_BATCH_SIZE));
+  assert.equal(parseIndexEvents(Array.from({ length: MAX_BATCH_SIZE }, () => valid)).events.length, MAX_BATCH_SIZE);
+});
+
+test("parseIndexEvents: phần tử sai bị từ chối kèm chỉ số, kể cả phần tử không phải object", () => {
+  rejectsBatch([valid, { ...valid, title: "" }], "[1]");
+  rejectsBatch([valid, { ...valid, title: "" }], "title");
+  rejectsBatch([{ ...valid, id: undefined }, valid], "[0]");
+  rejectsBatch([valid, "text"], "[1]");
+  rejectsBatch([valid, null], "[1]");
+  rejectsBatch([valid, [valid]], "[1]"); // mảng lồng mảng không được nhận
+  rejectsBatch([valid, 5], "object");
+});
+
+test("parseIndexEvents: thông báo lỗi của phần tử không lặp lại giá trị đã gửi", () => {
+  assert.throws(
+    () => parseIndexEvents([valid, { ...valid, title: "GIA-TRI-NHAY-CAM".repeat(50) }]),
+    (error: unknown) => error instanceof IndexEventError && !error.message.includes("GIA-TRI-NHAY-CAM"),
+  );
 });
 
 test("thông báo lỗi không lặp lại giá trị đã gửi", () => {
