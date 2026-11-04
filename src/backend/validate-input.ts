@@ -1,5 +1,8 @@
 import type { DedupInput } from './dedup.js';
 
+/** Giữ khớp với maxItems của excludeIds trong dedup-input.schema.json. */
+const MAX_EXCLUDE_IDS = 100;
+
 /**
  * Validate thủ công input theo đúng dedup-input.schema.json tại boundary
  * của route, trước khi đưa vào domain logic. Giữ đồng bộ tay với
@@ -16,7 +19,7 @@ export function parseDedupInput(input: unknown): DedupInput {
     type: record.type as DedupInput['type'],
     title: record.title as string,
     content: record.content as string,
-    excludeId: typeof record.excludeId === 'string' ? record.excludeId : undefined,
+    excludeIds: Array.isArray(record.excludeIds) ? (record.excludeIds as string[]) : undefined,
     parentSolutionId: typeof record.parentSolutionId === 'string' ? record.parentSolutionId : undefined,
   };
 }
@@ -28,7 +31,7 @@ function collectInputErrors(input: unknown): string[] {
     return ['input phải là object'];
   }
 
-  const allowedKeys = ['type', 'title', 'content', 'excludeId', 'parentSolutionId'];
+  const allowedKeys = ['type', 'title', 'content', 'excludeIds', 'parentSolutionId'];
   const unknownKeys = Object.keys(input).filter((key) => !allowedKeys.includes(key));
   if (unknownKeys.length > 0) {
     errors.push(`additionalProperties không hợp lệ: ${unknownKeys.join(', ')}`);
@@ -46,8 +49,12 @@ function collectInputErrors(input: unknown): string[] {
     errors.push('content phải là string độ dài 1..20000');
   }
 
-  if (input.excludeId !== undefined && !isBoundedString(input.excludeId, 1, 200)) {
-    errors.push('excludeId phải là string độ dài 1..200 khi có mặt');
+  if (input.excludeIds !== undefined) {
+    if (!Array.isArray(input.excludeIds) || input.excludeIds.length > MAX_EXCLUDE_IDS) {
+      errors.push(`excludeIds phải là array tối đa ${MAX_EXCLUDE_IDS} phần tử khi có mặt`);
+    } else if (!input.excludeIds.every((id) => isBoundedString(id, 1, 200))) {
+      errors.push('mỗi phần tử của excludeIds phải là string độ dài 1..200');
+    }
   }
 
   if (input.parentSolutionId !== undefined && !isBoundedString(input.parentSolutionId, 1, 200)) {

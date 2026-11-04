@@ -1,5 +1,7 @@
 # Báo cáo: Phân tích luồng `check-duplicates` & tiến độ triển khai
 
+> **Đã lỗi thời (2026-11-04).** Báo cáo này mô tả tool ở ngày 2026-11-02, khi ứng viên còn lấy từ VNAIP BE (mock). Từ GĐ3 ứng viên lấy từ Qdrant, đầu vào dùng `excludeIds`, có giới hạn người gọi và chấm điểm qua OpenRouter. Xem `docs/ke-hoach-phat-trien.md` (mục 6) và `README.md` để biết luồng hiện hành.
+
 - **Người thực hiện:** _(điền tên)_
 - **Ngày báo cáo:** 2026-11-02
 - **Phạm vi:** App `vnaip-dedup` — tool `check-duplicates` (kiểm tra hồ sơ trùng lặp trong VNAIP)

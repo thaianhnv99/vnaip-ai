@@ -9,6 +9,13 @@
  *
  * Mỗi lần restart script này sẽ sinh key mới — phải restart cả backend
  * (terminal B) cùng lúc nếu muốn JWKS khớp.
+ *
+ * Tool check-duplicates từ chối (403) người gọi không nằm trong allow-list, nên
+ * backend phải có trong .env một dòng khớp token giả bên dưới, ví dụ:
+ *   CHECK_DUPLICATES_ALLOWED_OIDS=org-dev-test
+ * Cùng với QDRANT_* + OPENROUTER_API_KEY + LLM_SCORER_MODEL (hoặc QDRANT_MOCK_MODE=true
+ * và LLM_MOCK_MODE=true: kho rỗng nên kết quả luôn rỗng; nạp dữ liệu mẫu bằng
+ * scripts/seed-ideas.ts với Qdrant thật).
  */
 import { createServer } from 'node:http';
 import { exportJWK, generateKeyPair, SignJWT, type JWTPayload } from 'jose';

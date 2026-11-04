@@ -9,7 +9,9 @@ export interface DedupInput {
   type: RecordType;
   title: string;
   content: string;
-  excludeId?: string;
+  /** Các `id` sáng kiến cần loại khỏi tập ứng viên (ví dụ chính hồ sơ đang sửa). */
+  excludeIds?: string[];
+  /** Hiện chưa được dùng để lọc ứng viên (vai trò chưa được nghiệp vụ xác nhận). */
   parentSolutionId?: string;
 }
 
@@ -56,6 +58,7 @@ export class DedupError extends Error {
   readonly code:
     | "INVALID_INPUT"
     | "CANDIDATES_UNAVAILABLE"
+    | "CANDIDATE_LIMIT_EXCEEDED"
     | "SCORING_UNAVAILABLE";
 
   constructor(
@@ -69,43 +72,47 @@ export class DedupError extends Error {
   }
 }
 
-/**
- * Context đã được middleware xác thực của SotaAgents kiểm chứng.
- * Không lấy trực tiếp các giá trị này từ request body.
- */
-export interface VerifiedContext {
-  organizationId: string;
-  workspaceId: string;
+/** Ngân sách thời gian của một lời gọi chấm điểm. */
+export interface ScoreOptions {
+  /** Mốc tuyệt đối (epoch ms) mà lời gọi phải xong; quá mốc thì dừng và báo lỗi. */
+  deadlineAt: number;
 }
 
 /**
  * Các kết nối bên ngoài được truyền vào để dễ thay thế và kiểm thử.
+ *
+ * Không có tham số tenant: từ 2026-11-04 mọi sáng kiến nằm chung một tập dữ liệu
+ * (không còn `datasetKey`), nên việc giới hạn ai được gọi tool nằm ở tầng route
+ * (caller-policy.ts, dựa trên claims đã xác thực), không phải ở đây.
  */
 export interface DedupDependencies {
-  findCandidates(
-    input: DedupInput,
-    context: VerifiedContext,
-    options: { limit: number },
-  ): Promise<Candidate[]>;
+  /**
+   * Trả MỌI sáng kiến cùng `type` (hướng A, không tìm theo vector). Phải ném lỗi
+   * khi không đọc được hết dữ liệu; không bao giờ trả danh sách bị cắt như thể đầy đủ.
+   */
+  findCandidates(input: DedupInput): Promise<Candidate[]>;
 
   scoreCandidates(
     input: DedupInput,
     candidates: Candidate[],
+    options: ScoreOptions,
   ): Promise<RawModelMatch[]>;
 }
 
 export interface CheckDuplicatesOptions {
   /**
-   * Số ứng viên tối đa lấy từ VNAIP BE để chấm điểm.
-   * UNRESOLVED: 30 là giá trị khởi điểm chưa tối ưu, cấu hình qua env
-   * (xem VNAIP_CANDIDATE_LIMIT trong server.ts / vnaip-client.ts).
+   * Số sáng kiến tối đa (sau khi loại `excludeIds`) được gửi cho model. Vượt trần
+   * thì báo lỗi CANDIDATE_LIMIT_EXCEEDED thay vì cắt: cắt tuỳ ý (không có độ
+   * tương đồng để xếp hạng) có thể bỏ sót đúng sáng kiến trùng và trả "không
+   * trùng" sai. Chạm trần là tín hiệu để chuyển sang hướng B (top-k theo vector).
    */
   candidateLimit: number;
+  /** Tổng thời gian cho cả lời gọi (lấy ứng viên + chấm điểm), nhỏ hơn timeoutMs của tool. */
+  deadlineMs: number;
 }
 
 export async function checkDuplicates(
   input: DedupInput,
-  context: VerifiedContext,
   deps: DedupDependencies,
   options: CheckDuplicatesOptions,
 ): Promise<DedupOutput> {
@@ -113,18 +120,30 @@ export async function checkDuplicates(
     throw new DedupError("INVALID_INPUT", "type, title và content là bắt buộc");
   }
 
-  // Bước 1: lấy ứng viên từ VNAIP BE. Nếu adapter lỗi, lỗi phải propagate —
-  // không bao giờ biến lỗi lấy ứng viên thành "không có hồ sơ trùng".
-  let candidates: Candidate[];
+  const deadlineAt = Date.now() + options.deadlineMs;
+
+  // Bước 1: lấy ứng viên. Nếu adapter lỗi, lỗi phải propagate — không bao giờ biến
+  // lỗi lấy ứng viên thành "không có hồ sơ trùng".
+  let found: Candidate[];
   try {
-    candidates = await deps.findCandidates(input, context, {
-      limit: options.candidateLimit,
-    });
+    found = await deps.findCandidates(input);
   } catch (error) {
+    if (error instanceof DedupError) throw error;
     throw new DedupError(
       "CANDIDATES_UNAVAILABLE",
-      "Không lấy được danh sách ứng viên từ VNAIP",
+      "Không lấy được danh sách sáng kiến để so sánh",
       { cause: error },
+    );
+  }
+
+  // Loại excludeIds ở đây (quy tắc nghiệp vụ) để không phụ thuộc adapter có làm hay không.
+  const excluded = new Set(input.excludeIds ?? []);
+  const candidates = found.filter((candidate) => !excluded.has(candidate.id));
+
+  if (candidates.length > options.candidateLimit) {
+    throw new DedupError(
+      "CANDIDATE_LIMIT_EXCEEDED",
+      "Số sáng kiến cần so sánh vượt trần cho phép",
     );
   }
 
@@ -135,7 +154,7 @@ export async function checkDuplicates(
   // Bước 2: model chấm mức tương đồng.
   let rawMatches: RawModelMatch[];
   try {
-    rawMatches = await deps.scoreCandidates(input, candidates);
+    rawMatches = await deps.scoreCandidates(input, candidates, { deadlineAt });
   } catch (error) {
     throw new DedupError(
       "SCORING_UNAVAILABLE",
@@ -176,7 +195,7 @@ export async function checkDuplicates(
 
     matches.push({
       id: candidate.id,
-      type: candidate.type, // Lấy từ VNAIP, không tin type do model trả về.
+      type: candidate.type, // Lấy từ dữ liệu đã index, không tin type do model trả về.
       percent: match.percent,
       score: match.percent / 100,
       reason: reason.slice(0, 1000),

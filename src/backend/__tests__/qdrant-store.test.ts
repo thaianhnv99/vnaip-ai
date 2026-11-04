@@ -328,6 +328,15 @@ test("loadQdrantConfig kiểm tra URL, tên collection và API key", () => {
   }
 });
 
+test("QDRANT_MOCK_MODE=true trả CÙNG một kho trong tiến trình cho cùng số chiều, kho khác cho số chiều khác", async () => {
+  const a = createVectorStoreFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS);
+  const b = createVectorStoreFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS);
+  const other = createVectorStoreFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS + 1);
+
+  assert.equal(a, b, "worker inline và tool phải thấy cùng dữ liệu");
+  assert.notEqual(a, other);
+});
+
 test("QDRANT_MOCK_MODE=true dùng store trong bộ nhớ; không đặt thì cần cấu hình thật", () => {
   assert.ok(createVectorStoreFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS) instanceof InMemoryVectorStore);
   assert.throws(

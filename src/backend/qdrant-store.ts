@@ -99,15 +99,33 @@ export function loadQdrantConfig(
 }
 
 /**
- * QDRANT_MOCK_MODE=true dùng store trong bộ nhớ. Biến không đặt nghĩa là dùng
- * Qdrant thật (và báo NOT_CONFIGURED nếu thiếu cấu hình).
+ * Kho trong bộ nhớ dùng chung trong một tiến trình (theo số chiều) cho
+ * QDRANT_MOCK_MODE: khi web chạy worker ngay trong tiến trình (QUEUE_MOCK_MODE=true),
+ * sáng kiến được index qua webhook phải hiện ra ở tool check-duplicates. Nếu mỗi nơi
+ * tự tạo một kho riêng thì tool luôn thấy kho rỗng và trả "không trùng" cho mọi thứ.
+ */
+const sharedMockStores = new Map<number, InMemoryVectorStore>();
+
+function sharedMockStore(dimensions: number): InMemoryVectorStore {
+  let store = sharedMockStores.get(dimensions);
+  if (!store) {
+    store = new InMemoryVectorStore(dimensions);
+    sharedMockStores.set(dimensions, store);
+  }
+  return store;
+}
+
+/**
+ * QDRANT_MOCK_MODE=true dùng store trong bộ nhớ (chung trong tiến trình, xem
+ * sharedMockStore; không chia sẻ được giữa web và worker chạy tiến trình riêng).
+ * Biến không đặt nghĩa là dùng Qdrant thật (và báo NOT_CONFIGURED nếu thiếu cấu hình).
  */
 export function createVectorStoreFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   dimensions: number,
 ): VectorStore {
   return env.QDRANT_MOCK_MODE === "true"
-    ? new InMemoryVectorStore(dimensions)
+    ? sharedMockStore(dimensions)
     : new QdrantVectorStore(loadQdrantConfig(env, dimensions));
 }
 

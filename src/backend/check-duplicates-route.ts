@@ -6,63 +6,97 @@ import {
 } from "./dedup.js";
 import { parseDedupInput } from "./validate-input.js";
 import { assertValidDedupOutput } from "./validate-output.js";
-import {
-  findVnaipCandidates,
-  loadVnaipClientConfig,
-  createMockVnaipClient,
-  VnaipClientError,
-} from "./vnaip-client.js";
-import {
-  scoreCandidatesWithLlm,
-  loadLlmScorerConfig,
-  createMockScorer,
-  LlmScorerError,
-} from "./llm-scorer.js";
-import type { InvocationClaims } from "./sota-auth.js";
+import { createQdrantCandidateFinder } from "./candidate-source.js";
+import { createScorerFromEnv, LlmScorerError } from "./llm-scorer.js";
+import { DEFAULT_EMBEDDING_DIMENSIONS } from "./openrouter-embeddings.js";
+import { createVectorStoreFromEnv } from "./qdrant-store.js";
+import { VectorStoreError } from "./vector-store.js";
 
 /**
- * UNRESOLVED (blocker trước production): VNAIP_MOCK_MODE / LLM_MOCK_MODE
- * mặc định "true" vì chưa có API contract thật. Đổi sang "false" chỉ sau
- * khi VNAIP BE và provider model thật đã được xác nhận và kiểm thử.
+ * Trần số sáng kiến gửi cho model (hướng A gửi tất cả). 100 sáng kiến là 20 batch
+ * (5 ứng viên) chạy trong MỘT đợt song song (đồng thời 20), vừa với ngân sách
+ * `deadlineMs`; vượt 100 thì cần đợt thứ hai và thời gian gần gấp đôi, nên nâng trần
+ * phải đo lại thời gian trả lời. Chạm trần là tín hiệu để chuyển sang hướng B
+ * (top-k theo vector).
  */
-function isMockEnabled(name: string, env: NodeJS.ProcessEnv): boolean {
-  return (env[name] ?? "true") !== "false";
-}
+const DEFAULT_CANDIDATE_LIMIT = 100;
+const MAX_CANDIDATE_LIMIT = 500;
+/**
+ * Tổng thời gian cho cả lời gọi, nhỏ hơn `timeoutMs: 15000` của tool trong
+ * manifest để app tự trả lỗi có mã thay vì để Core cắt ngang.
+ */
+const DEFAULT_DEADLINE_MS = 13000;
 
 function loadCandidateLimit(env: NodeJS.ProcessEnv): number {
-  const raw = Number(env.VNAIP_CANDIDATE_LIMIT ?? 30);
-  return Number.isInteger(raw) && raw > 0 && raw <= 200 ? raw : 30;
+  const raw = Number(env.CHECK_DUPLICATES_CANDIDATE_LIMIT);
+  return Number.isInteger(raw) && raw > 0 && raw <= MAX_CANDIDATE_LIMIT
+    ? raw
+    : DEFAULT_CANDIDATE_LIMIT;
 }
 
+function loadDeadlineMs(env: NodeJS.ProcessEnv): number {
+  const raw = Number(env.CHECK_DUPLICATES_DEADLINE_MS);
+  return Number.isInteger(raw) && raw >= 1000 && raw <= 60000
+    ? raw
+    : DEFAULT_DEADLINE_MS;
+}
+
+/**
+ * Dựng dependency thật. Luồng 1 không embed (hướng A) nên không cần khoá embedding;
+ * cần Qdrant (đọc) và model chấm điểm. Mock chỉ bật khi đặt =true tường minh
+ * (QDRANT_MOCK_MODE, LLM_MOCK_MODE): thiếu cấu hình thì ném lỗi NOT_CONFIGURED thay
+ * vì âm thầm dùng dữ liệu giả.
+ */
 export function buildDependencies(
   env: NodeJS.ProcessEnv = process.env,
+  log: ToolLogger = defaultLog,
 ): DedupDependencies {
-  const useVnaipMock = isMockEnabled("VNAIP_MOCK_MODE", env);
-  const useLlmMock = isMockEnabled("LLM_MOCK_MODE", env);
+  const store = createVectorStoreFromEnv(env, DEFAULT_EMBEDDING_DIMENSIONS);
+  if (env.QDRANT_MOCK_MODE === "true") {
+    log("info", "check_duplicates_in_memory_store", {
+      message:
+        "QDRANT_MOCK_MODE=true: tool đọc kho trong bộ nhớ của tiến trình web, không thấy dữ liệu do worker chạy ở tiến trình riêng ghi.",
+    });
+  }
 
-  const vnaipConfig = loadVnaipClientConfig(env);
-  const llmConfig = loadLlmScorerConfig(env);
+  // Tạo/kiểm collection ở lần đọc đầu thay vì lúc khởi động (Qdrant chậm không làm
+  // app khởi động chậm). Collection chưa có nghĩa là chưa index gì; không có bước
+  // này thì lần gọi đầu trên môi trường mới sẽ lỗi 404 thay vì trả danh sách rỗng.
+  let ready: Promise<void> | undefined;
+  const ensureReady = () =>
+    (ready ??= store.ensureCollection().catch((error) => {
+      ready = undefined;
+      throw error;
+    }));
 
   return {
-    findCandidates: useVnaipMock
-      ? createMockVnaipClient()
-      : (input, context, options) =>
-          findVnaipCandidates(input, context, options, vnaipConfig),
-    scoreCandidates: useLlmMock
-      ? createMockScorer()
-      : (input, candidates) =>
-          scoreCandidatesWithLlm(input, candidates, llmConfig),
+    findCandidates: createQdrantCandidateFinder(store, {
+      ensureReady,
+      log: (event, details) => log("info", event, details),
+    }),
+    scoreCandidates: createScorerFromEnv(env),
   };
 }
 
+type DependencySource = DedupDependencies | (() => DedupDependencies);
+
 export function createCheckDuplicatesHandler(
-  deps: DedupDependencies = buildDependencies(),
+  source: DependencySource = () => buildDependencies(),
   env: NodeJS.ProcessEnv = process.env,
+  log: ToolLogger = defaultLog,
 ): RequestHandler {
-  const candidateLimit = loadCandidateLimit(env);
+  const options = {
+    candidateLimit: loadCandidateLimit(env),
+    deadlineMs: loadDeadlineMs(env),
+  };
+
+  // Chỉ nhớ lần dựng THÀNH CÔNG: cấu hình sửa xong thì lần gọi sau chạy được mà
+  // không cần khởi động lại.
+  let built: DedupDependencies | undefined = typeof source === "function" ? undefined : source;
+  const getDependencies = (): DedupDependencies => (built ??= (source as () => DedupDependencies)());
 
   return async (request, response) => {
-    const claims = response.locals.sota as InvocationClaims;
+    const startedAt = performance.now();
     const requestId =
       response.getHeader("x-request-id") ??
       request.header("x-request-id") ??
@@ -83,18 +117,27 @@ export function createCheckDuplicatesHandler(
     }
 
     try {
-      const output = await checkDuplicates(
-        input,
-        { organizationId: claims.oid, workspaceId: claims.wid },
-        deps,
-        { candidateLimit },
-      );
+      const output = await checkDuplicates(input, getDependencies(), options);
 
       assertValidDedupOutput(output);
+      log("info", "check_duplicates_done", {
+        requestId,
+        matches: output.matches.length,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
       response.json(output);
     } catch (error) {
       const { status, code, message } = mapErrorToResponse(error);
-      log("error", "check_duplicates_failed", { requestId, code, message });
+      log("error", "check_duplicates_failed", {
+        requestId,
+        code,
+        status,
+        durationMs: Math.round(performance.now() - startedAt),
+        // Chỉ ghi mã lỗi gốc của downstream (không ghi message/cause: có thể chứa chi tiết nhạy cảm).
+        ...(rootErrorCode(error) ? { cause: rootErrorCode(error) } : {}),
+        // Ngoại lệ: lỗi thiếu cấu hình do chính app tạo, message chỉ nêu tên biến môi trường.
+        ...(isNotConfigured(error) ? { message: (error as Error).message } : {}),
+      });
       response.status(status).json({ code, message });
     }
   };
@@ -105,6 +148,13 @@ function mapErrorToResponse(error: unknown): {
   code: string;
   message: string;
 } {
+  if (isNotConfigured(error)) {
+    return {
+      status: 503,
+      code: "TOOL_NOT_CONFIGURED",
+      message: "Tool chưa được cấu hình. Vui lòng thử lại sau.",
+    };
+  }
   if (error instanceof DedupError) {
     switch (error.code) {
       case "INVALID_INPUT":
@@ -114,7 +164,14 @@ function mapErrorToResponse(error: unknown): {
           status: 502,
           code: error.code,
           message:
-            "Không thể lấy danh sách ứng viên từ VNAIP. Vui lòng thử lại sau.",
+            "Không thể lấy danh sách sáng kiến để so sánh. Vui lòng thử lại sau.",
+        };
+      case "CANDIDATE_LIMIT_EXCEEDED":
+        return {
+          status: 503,
+          code: error.code,
+          message:
+            "Số sáng kiến cần so sánh vượt giới hạn của tool nên không thể kiểm tra đầy đủ.",
         };
       case "SCORING_UNAVAILABLE":
         return {
@@ -124,7 +181,7 @@ function mapErrorToResponse(error: unknown): {
         };
     }
   }
-  if (error instanceof VnaipClientError || error instanceof LlmScorerError) {
+  if (error instanceof VectorStoreError || error instanceof LlmScorerError) {
     // Không nên lộ ra ngoài checkDuplicates() (đã được bọc thành DedupError),
     // nhưng xử lý phòng hờ để không bao giờ rơi về nhánh "lỗi nội bộ" chung.
     return {
@@ -139,11 +196,32 @@ function mapErrorToResponse(error: unknown): {
   return { status: 500, code: "APP_ERROR", message: "Xử lý yêu cầu thất bại." };
 }
 
+/** Lỗi thiếu cấu hình do chính app tạo ra (dựng dependency), không phải lỗi downstream. */
+function isNotConfigured(error: unknown): boolean {
+  return (
+    (error instanceof VectorStoreError || error instanceof LlmScorerError) &&
+    error.code === "NOT_CONFIGURED"
+  );
+}
+
+/** Mã lỗi của downstream nằm sau DedupError (qua `cause`), để log truy được nguyên nhân. */
+function rootErrorCode(error: unknown): string | undefined {
+  const source = error instanceof DedupError ? error.cause : error;
+  const code = (source as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, any> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function log(
+export type ToolLogger = (
+  level: "info" | "error",
+  event: string,
+  details: Record<string, unknown>,
+) => void;
+
+function defaultLog(
   level: "info" | "error",
   event: string,
   details: Record<string, unknown>,

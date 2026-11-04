@@ -14,11 +14,14 @@ contributes:
     - name: check-duplicates
       description: >-
         Kiểm tra mức độ tương đồng giữa một hồ sơ đầu vào (ví dụ: giải pháp)
-        và các hồ sơ ứng viên mà caller được phép truy cập trong VNAIP.
-        Trả về danh sách ứng viên đã được model đánh giá kèm điểm số 0..1
-        và lý do. Gọi tool này trước khi tạo hồ sơ mới để tránh trùng lặp.
-        Caller chịu trách nhiệm diễn giải điểm số; đây không phải kết luận
-        trùng lặp cuối cùng.
+        và toàn bộ các sáng kiến cùng loại đã được duyệt và index trong VNAIP
+        (có thể loại bớt bằng excludeIds). Chỉ dành cho service account của
+        VNAIP BE; lời gọi từ người gọi khác bị từ chối (403).
+        Trả về tối đa 30 sáng kiến giống nhất đã được model chấm, mỗi mục có
+        id, điểm số 0..1 (và percent 0..100) cùng lý do. Gọi tool này trước khi
+        tạo hồ sơ mới để tránh trùng lặp. Nếu kho sáng kiến vượt giới hạn so
+        sánh của tool thì trả lỗi thay vì kết quả thiếu. Caller chịu trách
+        nhiệm diễn giải điểm số; đây không phải kết luận trùng lặp cuối cùng.
       route: POST /tools/check-duplicates
       inputSchema: src/schemas/dedup-input.schema.json
       outputSchema: src/schemas/dedup-output.schema.json

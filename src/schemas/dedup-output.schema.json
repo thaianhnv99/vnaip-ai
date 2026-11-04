@@ -17,14 +17,14 @@
         "properties": {
           "type": {
             "type": "string",
-            "description": "Loại hồ sơ của ứng viên, lấy từ dữ liệu VNAIP đã xác thực — không lấy từ output model.",
+            "description": "Loại hồ sơ của ứng viên, lấy từ dữ liệu đã index — không lấy từ output model.",
             "enum": ["solution"]
           },
           "id": {
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "description": "ID ứng viên, phải thuộc danh sách do VNAIP BE trả về."
+            "description": "ID sáng kiến (`id` mà VNAIP BE đã gửi khi index), phải thuộc tập ứng viên được so sánh."
           },
           "score": {
             "type": "number",

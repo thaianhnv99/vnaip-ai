@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createCheckDuplicatesHandler } from '../check-duplicates-route.js';
+import { buildDependencies, createCheckDuplicatesHandler } from '../check-duplicates-route.js';
 import type { DedupDependencies } from '../dedup.js';
 import type { Request, Response } from 'express';
+import { LlmScorerError } from '../llm-scorer.js';
+import { VectorStoreError } from '../vector-store.js';
+import { DedupError } from '../dedup.js';
 
 function fakeRequestResponse(body: unknown) {
   const request = {
@@ -64,7 +67,7 @@ test('input sai schema trả 400 INVALID_INPUT', async () => {
   assert.equal((state.body as any).code, 'INVALID_INPUT');
 });
 
-test('VNAIP BE lỗi trả 502 CANDIDATES_UNAVAILABLE, không lộ chi tiết lỗi gốc', async () => {
+test('nguồn ứng viên lỗi trả 502 CANDIDATES_UNAVAILABLE, không lộ chi tiết lỗi gốc', async () => {
   const deps: DedupDependencies = {
     findCandidates: async () => {
       throw new Error('ECONNREFUSED 10.0.0.5:443 token=super-secret-abc');
@@ -144,4 +147,169 @@ test('log lỗi không chứa nội dung hồ sơ (title/content) hoặc bí m�
   assert.doesNotMatch(combined, /NỘI DUNG NHẠY CẢM/);
   assert.doesNotMatch(combined, /XYZ-123/);
   assert.doesNotMatch(combined, /Bearer abc\.def\.ghi/);
+});
+
+function captureLog() {
+  const lines: Array<Record<string, unknown>> = [];
+  return {
+    lines,
+    log: (level: string, event: string, details: Record<string, unknown>) => {
+      lines.push({ level, event, ...details });
+    },
+  };
+}
+
+test('trần ứng viên vượt quá trả 503 CANDIDATE_LIMIT_EXCEEDED thay vì kết quả thiếu', async () => {
+  const deps: DedupDependencies = {
+    findCandidates: async () =>
+      Array.from({ length: 3 }, (_, i) => ({ id: `c${i}`, type: 'solution' as const, title: 't', content: 'c' })),
+    scoreCandidates: async () => {
+      throw new Error('không nên được gọi');
+    },
+  };
+  const handler = createCheckDuplicatesHandler(deps, { CHECK_DUPLICATES_CANDIDATE_LIMIT: '2' });
+  const { request, response, state } = fakeRequestResponse({ body: { input: validInput } });
+
+  await handler(request, response, () => {});
+
+  assert.equal(state.status, 503);
+  assert.equal((state.body as any).code, 'CANDIDATE_LIMIT_EXCEEDED');
+});
+
+test('nguồn ứng viên báo vượt giới hạn đọc (DedupError) cũng trả 503, không phải 502', async () => {
+  const deps: DedupDependencies = {
+    findCandidates: async () => {
+      throw new DedupError('CANDIDATE_LIMIT_EXCEEDED', 'kho quá lớn');
+    },
+    scoreCandidates: async () => [],
+  };
+  const handler = createCheckDuplicatesHandler(deps, {});
+  const { request, response, state } = fakeRequestResponse({ body: { input: validInput } });
+
+  await handler(request, response, () => {});
+
+  assert.equal(state.status, 503);
+  assert.equal((state.body as any).code, 'CANDIDATE_LIMIT_EXCEEDED');
+});
+
+test('giá trị CHECK_DUPLICATES_CANDIDATE_LIMIT không hợp lệ rơi về mặc định 100, không tắt giới hạn', async () => {
+  const candidates = Array.from({ length: 101 }, (_, i) => ({
+    id: `c${i}`,
+    type: 'solution' as const,
+    title: 't',
+    content: 'c',
+  }));
+  for (const raw of ['0', '-5', 'abc', '501', '1.5', '']) {
+    const handler = createCheckDuplicatesHandler(
+      { findCandidates: async () => candidates, scoreCandidates: async () => [] },
+      { CHECK_DUPLICATES_CANDIDATE_LIMIT: raw },
+    );
+    const { request, response, state } = fakeRequestResponse({ body: { input: validInput } });
+    await handler(request, response, () => {});
+    assert.equal(state.status, 503, `giá trị ${JSON.stringify(raw)} phải rơi về mặc định 100`);
+  }
+});
+
+test('thiếu cấu hình trả 503 TOOL_NOT_CONFIGURED, và lần gọi sau chạy được khi đã sửa cấu hình', async () => {
+  const { lines, log } = captureLog();
+  let configured = false;
+  let built = 0;
+  const handler = createCheckDuplicatesHandler(
+    () => {
+      built += 1;
+      if (!configured) {
+        throw new VectorStoreError('NOT_CONFIGURED', 'Qdrant chưa được cấu hình (thiếu QDRANT_URL hoặc QDRANT_COLLECTION)');
+      }
+      return {
+        findCandidates: async () => [{ id: 'a', type: 'solution', title: 'A', content: 'x' }],
+        scoreCandidates: async () => [{ id: 'a', percent: 40, reason: 'ok' }],
+      };
+    },
+    {},
+    log,
+  );
+
+  const first = fakeRequestResponse({ body: { input: validInput } });
+  await handler(first.request, first.response, () => {});
+  assert.equal(first.state.status, 503);
+  assert.equal((first.state.body as any).code, 'TOOL_NOT_CONFIGURED');
+  // Body trả cho caller không nêu tên biến môi trường; log thì có để người vận hành sửa.
+  assert.doesNotMatch(JSON.stringify(first.state.body), /QDRANT/);
+  assert.match(String(lines.find((l) => l.event === 'check_duplicates_failed')?.message), /QDRANT_URL/);
+
+  configured = true;
+  const second = fakeRequestResponse({ body: { input: validInput } });
+  await handler(second.request, second.response, () => {});
+  assert.equal(second.state.status, 200);
+
+  // Dựng thành công thì được nhớ lại, không dựng lại mỗi request.
+  const third = fakeRequestResponse({ body: { input: validInput } });
+  await handler(third.request, third.response, () => {});
+  assert.equal(built, 2);
+});
+
+test('scorer chưa cấu hình (LlmScorerError NOT_CONFIGURED) cũng trả 503 TOOL_NOT_CONFIGURED', async () => {
+  const handler = createCheckDuplicatesHandler(() => {
+    throw new LlmScorerError('NOT_CONFIGURED', 'LLM scorer chưa được cấu hình');
+  }, {});
+  const { request, response, state } = fakeRequestResponse({ body: { input: validInput } });
+
+  await handler(request, response, () => {});
+
+  assert.equal(state.status, 503);
+  assert.equal((state.body as any).code, 'TOOL_NOT_CONFIGURED');
+});
+
+test('log thành công và thất bại ghi mã, số lượng, thời gian; không ghi nội dung hồ sơ', async () => {
+  const { lines, log } = captureLog();
+  const ok = createCheckDuplicatesHandler(
+    {
+      findCandidates: async () => [{ id: 'a', type: 'solution', title: 'TIÊU ĐỀ BÍ MẬT', content: 'NỘI DUNG BÍ MẬT' }],
+      scoreCandidates: async () => [{ id: 'a', percent: 60, reason: 'LÝ DO BÍ MẬT' }],
+    },
+    {},
+    log,
+  );
+  const good = fakeRequestResponse({ body: { input: { ...validInput, content: 'INPUT BÍ MẬT' } } });
+  await ok(good.request, good.response, () => {});
+
+  const failing = createCheckDuplicatesHandler(
+    {
+      findCandidates: async () => {
+        throw new VectorStoreError('TIMEOUT', 'Gọi Qdrant quá thời gian cho phép');
+      },
+      scoreCandidates: async () => [],
+    },
+    {},
+    log,
+  );
+  const bad = fakeRequestResponse({ body: { input: validInput } });
+  await failing(bad.request, bad.response, () => {});
+
+  const done = lines.find((l) => l.event === 'check_duplicates_done');
+  assert.equal(done?.matches, 1);
+  assert.equal(typeof done?.durationMs, 'number');
+  const failed = lines.find((l) => l.event === 'check_duplicates_failed');
+  assert.equal(failed?.code, 'CANDIDATES_UNAVAILABLE');
+  assert.equal(failed?.cause, 'TIMEOUT');
+  assert.doesNotMatch(JSON.stringify(lines), /BÍ MẬT/);
+});
+
+test('buildDependencies: thiếu cấu hình Qdrant ném NOT_CONFIGURED (không âm thầm dùng dữ liệu giả)', () => {
+  assert.throws(
+    () => buildDependencies({ LLM_MOCK_MODE: 'true' }),
+    (error: unknown) => error instanceof VectorStoreError && error.code === 'NOT_CONFIGURED',
+  );
+});
+
+test('buildDependencies: thiếu khoá/model chấm điểm ném NOT_CONFIGURED, kể cả khi LLM_MOCK_MODE không đặt', () => {
+  assert.throws(
+    () => buildDependencies({ QDRANT_MOCK_MODE: 'true' }),
+    (error: unknown) => error instanceof LlmScorerError && error.code === 'NOT_CONFIGURED',
+  );
+});
+
+test('buildDependencies: QDRANT_MOCK_MODE + LLM_MOCK_MODE chạy được và kho rỗng thì không có ứng viên', async () => {
+  const deps = buildDependencies({ QDRANT_MOCK_MODE: 'true', LLM_MOCK_MODE: 'true' }, () => {});
+  assert.deepEqual(await deps.findCandidates({ type: 'solution', title: 't', content: 'c' }), []);
 });

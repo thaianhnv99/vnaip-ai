@@ -1,0 +1,92 @@
+[
+  {
+    "id": "SEED-GP-0001",
+    "type": "solution",
+    "title": "Ứng dụng di động báo cáo sự cố mặt đất theo thời gian thực",
+    "content": "Xây dựng ứng dụng di động cho nhân viên mặt đất báo cáo sự cố ngay tại vị trí phát sinh, kèm ảnh chụp và định vị, gửi thẳng về trung tâm điều hành.\n\nHiện trạng: sự cố được ghi lại bằng giấy hoặc báo miệng qua bộ đàm, thông tin đến trung tâm điều hành chậm và thiếu chính xác về vị trí.\n\nGiá trị: rút ngắn thời gian tiếp nhận sự cố, có bằng chứng hình ảnh, thống kê được sự cố theo khu vực và theo thời điểm.",
+    "metadata": {
+      "seed": true
+    }
+  },
+  {
+    "id": "SEED-GP-0002",
+    "type": "solution",
+    "title": "Báo cáo sự cố hiện trường bằng điện thoại kèm ảnh và vị trí",
+    "content": "Nhân viên khu bay dùng điện thoại báo cáo sự cố tại hiện trường, đính kèm ảnh và toạ độ, hệ thống chuyển ngay đến bộ phận điều hành để xử lý.\n\nMục tiêu: thay việc ghi chép giấy và gọi bộ đàm bằng một biểu mẫu trên ứng dụng, giúp điều hành nắm sự cố nhanh hơn và biết chính xác nơi xảy ra.",
+    "metadata": {
+      "seed": true
+    }
+  },
+  {
+    "id": "SEED-GP-0003",
+    "type": "solution",
+    "title": "Biên bản kiểm tra an toàn trước chuyến bay điện tử dùng mã QR",
+    "content": "Thay biên bản kiểm tra an toàn trước chuyến bay ghi tay trên giấy bằng biểu mẫu điện tử. Mỗi vị trí kiểm tra có một mã QR; kỹ thuật viên quét mã, điền kết quả và ký xác nhận trên điện thoại.\n\nGiá trị: tra cứu nhanh lịch sử kiểm tra theo vị trí, không thất lạc biên bản, giảm thời gian nhập liệu lại.",
+    "metadata": {
+      "seed": true
+    }
+  },
+  {
+    "id": "SEED-GP-0004",
+    "type": "solution",
+    "title": "Số hoá phiếu kiểm tra an toàn bằng QR code tại điểm kiểm tra",
+    "content": "Dán mã QR tại từng điểm kiểm tra an toàn trước chuyến bay. Người kiểm tra quét mã để mở phiếu điện tử, nhập kết quả kiểm tra và lưu lại để tra cứu lịch sử về sau, không còn dùng phiếu giấy.",
+    "metadata": {
+      "seed": true
+    }
+  },
+  {
+    "id": "SEED-GP-0005",
+    "type": "solution",
+    "title": "Nền tảng dữ liệu dùng chung cho các khối nghiệp vụ",
+    "content": "Xây dựng nền tảng lưu trữ và chia sẻ dữ liệu dùng chung giữa các khối nghiệp vụ, thay thế việc trao đổi file rời rạc qua email. Dữ liệu được chuẩn hoá danh mục, phân quyền truy cập theo khối và có nhật ký truy cập.",
+    "metadata": {
+      "seed": true
+    }
+  },
+  {
+    "id": "SEED-GP-0006",
+    "type": "solution",
+    "title": "Chuẩn hoá quy trình xử lý yêu cầu khách hàng đa kênh",
+    "content": "Xây dựng quy trình tiếp nhận và xử lý yêu cầu khách hàng thống nhất giữa các kênh (điện thoại, email, mạng xã hội), có SLA rõ ràng theo từng loại yêu cầu và báo cáo tuân thủ SLA hằng tuần.",
+    "metadata": {
+      "seed": true
+    }
+  },
+  {
+    "id": "SEED-GP-0007",
+    "type": "solution",
+    "title": "Dự báo nhu cầu vật tư bảo dưỡng tàu bay bằng học máy",
+    "content": "Dùng dữ liệu lịch sử bảo dưỡng và kế hoạch khai thác để dự báo nhu cầu vật tư tiêu hao và phụ tùng thay thế theo từng tháng, giảm tồn kho dư thừa và tránh thiếu vật tư làm trễ lịch bảo dưỡng.\n\nHiện trạng: kế hoạch vật tư được lập thủ công dựa trên kinh nghiệm của từng kho. Số liệu nằm rải rác ở nhiều hệ thống nên việc tổng hợp mất nhiều ngày, và kết quả thường lệch so với nhu cầu thực tế. Khi thiếu vật tư, tàu bay phải chờ ở nhà ga, gây chi phí lớn cho cả bảo dưỡng lẫn khai thác. Khi dư vật tư, vốn bị chôn trong kho và một số loại hết hạn sử dụng trước khi được dùng đến.\n\nGiải pháp đề xuất: gom dữ liệu tiêu thụ vật tư theo loại tàu bay, theo giờ bay và chu kỳ kiểm tra; huấn luyện mô hình dự báo theo chuỗi thời gian có tính đến mùa vụ khai thác và kế hoạch đưa tàu bay vào bảo dưỡng định kỳ. Kết quả dự báo được hiển thị trên bảng điều khiển cho từng kho, kèm mức độ tin cậy và khuyến nghị đặt hàng. Người lập kế hoạch có thể điều chỉnh tay và hệ thống học lại từ các điều chỉnh đó.\n\nLộ trình: giai đoạn một thí điểm với nhóm vật tư tiêu hao có dữ liệu sạch; giai đoạn hai mở rộng sang phụ tùng thay thế; giai đoạn ba tích hợp trực tiếp với hệ thống mua sắm để tự động đề xuất đơn đặt hàng cho người duyệt.\n\nRủi ro và biện pháp: chất lượng dữ liệu lịch sử không đồng đều giữa các kho nên mô hình có thể dự báo sai ở nhóm vật tư ít giao dịch; biện pháp là chỉ đưa vào dự báo những nhóm đủ số quan sát tối thiểu, các nhóm còn lại giữ phương pháp lập kế hoạch hiện tại và được đánh dấu rõ trên bảng điều khiển. Rủi ro thứ hai là người lập kế hoạch không tin kết quả của mô hình; biện pháp là hiển thị lý do của từng dự báo (xu hướng tiêu thụ, mùa vụ, kế hoạch bảo dưỡng sắp tới) để họ kiểm chứng được bằng kinh nghiệm của mình trước khi chấp nhận.\n\nChỉ số đo lường: sai số dự báo trung bình theo từng nhóm vật tư so với thực tế tiêu thụ; tỷ lệ tàu bay phải chờ vật tư; giá trị tồn kho vượt mức an toàn; số ngày công dành cho việc lập kế hoạch vật tư hằng tháng. Mục tiêu sau sáu tháng thí điểm là giảm tối thiểu một phần ba thời gian lập kế hoạch và giảm rõ rệt số lần thiếu vật tư ở nhóm đã áp dụng.",
+    "metadata": {
+      "seed": true
+    }
+  },
+  {
+    "id": "SEED-GP-0008",
+    "type": "solution",
+    "title": "Trợ lý ảo hỗ trợ hành khách tra cứu thông tin chuyến bay",
+    "content": "Triển khai chatbot trên website và ứng dụng để hành khách tra cứu giờ bay, cổng ra máy bay, quy định hành lý và thủ tục làm lại vé mà không cần gọi tổng đài.",
+    "metadata": {
+      "seed": true
+    }
+  },
+  {
+    "id": "SEED-GP-0009",
+    "type": "solution",
+    "title": "Tối ưu lịch phân công tổ bay bằng thuật toán tối ưu hoá",
+    "content": "Áp dụng thuật toán tối ưu hoá để lập lịch phân công tổ bay, đảm bảo đúng quy định về thời gian làm việc và nghỉ ngơi, cân bằng số giờ bay giữa các thành viên và giảm chi phí khách sạn, di chuyển.",
+    "metadata": {
+      "seed": true
+    }
+  },
+  {
+    "id": "SEED-GP-0010",
+    "type": "solution",
+    "title": "Hệ thống nhắc hạn chứng chỉ chuyên môn của nhân viên",
+    "content": "Tập trung dữ liệu chứng chỉ, giấy phép hành nghề của nhân viên vào một hệ thống, tự động nhắc người liên quan và quản lý trực tiếp trước 90, 60 và 30 ngày khi chứng chỉ sắp hết hạn để kịp tổ chức đào tạo, thi lại.",
+    "metadata": {
+      "seed": true
+    }
+  }
+]
