@@ -3,6 +3,9 @@ import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { requireSotaInvocation } from './sota-auth.js';
 import { registerToolRoutes } from './tool-routes.js';
+import { createErrorHandler } from './error-handler.js';
+import { startWebhookService } from './index-service.js';
+import { registerWebhookRoutes } from './webhook-routes.js';
 
 const appId = 'vnaip-dedup';
 const app = express();
@@ -41,18 +44,22 @@ app.get('/api/hello', requireSotaInvocation(appId, 'app:http'), (_request, respo
 
 registerToolRoutes(app, appId);
 
-app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
-  log('error', 'request_failed', {
-    message: error instanceof Error ? error.message : String(error),
-  });
-  response.status(500).json({ code: 'APP_ERROR', message: 'Request failed' });
-});
+// Webhook index do VNAIP BE gọi thẳng (không qua Core, không có invocation JWT):
+// tự xác thực bằng API key và chỉ đẩy job vào hàng đợi. Worker index chạy ở tiến
+// trình riêng (worker.ts), trừ QUEUE_MOCK_MODE=true khi cục bộ. Thiếu cấu hình
+// thì startWebhookService trả null và webhook trả 503, app vẫn khởi động bình thường.
+const webhookService = await startWebhookService();
+registerWebhookRoutes(app, webhookService?.webhook ?? null);
+
+app.use(createErrorHandler(log));
 
 const defaultLocalPort = 8787;
 const port = Number(process.env.PORT ?? defaultLocalPort);
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   log('error', 'server_failed', { appId, message: 'PORT must be an integer from 1 to 65535' });
   process.exitCode = 1;
+  // Đóng kết nối Redis để tiến trình thoát thay vì treo.
+  void webhookService?.stop();
 } else {
   // Bind 0.0.0.0 so hosting platforms (e.g. Render) can detect the open port.
   // The manifest's environments.local.service.baseUrl still points at
@@ -70,7 +77,27 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
       url: `http://0.0.0.0:${port}`,
     });
     process.exitCode = 1;
+    void webhookService?.stop();
   });
+
+  // Tắt êm khi nền tảng gửi SIGTERM (ví dụ lúc deploy): ngừng nhận request rồi
+  // đóng kết nối Redis. Job đang xử lý là việc của worker, không phải của web.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log('info', 'shutdown_started', { signal });
+    const force = setTimeout(() => process.exit(1), 25_000);
+    force.unref();
+    const httpClosed = new Promise<void>((resolve) => server.close(() => resolve()));
+    const queueClosed = (webhookService?.stop() ?? Promise.resolve()).catch(() => undefined);
+    void Promise.all([httpClosed, queueClosed]).then(() => {
+      log('info', 'shutdown_done', { signal });
+      process.exit(0);
+    });
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 }
 
 function log(level: 'info' | 'error', event: string, details: Record<string, unknown>) {

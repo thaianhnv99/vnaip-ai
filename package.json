@@ -10,16 +10,20 @@
     "dev:backend": "tsx watch src/backend/server.ts",
     "build:backend": "tsc -p tsconfig.backend.json",
     "start": "node dist/backend/server.js",
+    "start:worker": "node dist/backend/worker.js",
     "build": "tsc -p tsconfig.backend.json",
     "dev": "tsx watch src/backend/server.ts",
+    "dev:worker": "tsx watch src/backend/worker.ts",
     "typecheck": "tsc -p tsconfig.backend.json --noEmit",
     "typecheck:tests": "tsc -p tsconfig.backend.tests.json --noEmit",
     "test": "tsx --test src/backend/__tests__/*.test.ts"
   },
   "dependencies": {
+    "bullmq": "^6.6.0",
+    "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "jose": "^6.2.3",
-    "dotenv": "^17.2.3"
+    "ioredis": "^6.0.0",
+    "jose": "^6.2.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.5",

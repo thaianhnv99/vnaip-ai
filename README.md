@@ -46,6 +46,13 @@ npm run dev        # app backend, terminal 1
 npm run dev:sota    # Sota dev session + tunnel, terminal 2
 ```
 
+Luồng index chạy ở hai tiến trình: web (`npm run dev`, hosted `npm start`) chỉ nhận
+webhook rồi đẩy job vào Redis; worker (`npm run dev:worker`, hosted
+`npm run start:worker`) xử lý job. Với `QUEUE_MOCK_MODE=true` (hàng đợi trong bộ nhớ,
+chỉ cục bộ) web tự chạy worker nên không cần chạy thêm. Khi dùng BullMQ thật
+(`REDIS_URL`), phải chạy worker riêng với cùng `REDIS_URL`, `QUEUE_PREFIX`, `QUEUE_NAME`.
+Chi tiết: `docs/ke-hoach-phat-trien.md` (GĐ2).
+
 ### Kiểm thử
 
 ```bash
