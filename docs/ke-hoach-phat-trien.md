@@ -33,7 +33,7 @@ GĐ0 → GĐ1 ─┬→ GĐ2 ─┐
 
 Giai đoạn này không viết code. Chỉ các điểm sau thật sự chặn các giai đoạn sau.
 
-- [x] **Auth webhook và tách dữ liệu theo workspace (mục 11 #2).** Đã chốt API key đặt trong env để xác thực BE. Phần tách dữ liệu theo `datasetKey` (chốt 2026-11-03) đã **bị bỏ ngày 2026-11-04**: mọi sáng kiến nằm chung một tập dữ liệu, xem mục 3.2 dòng 9 và "Điểm mở còn lại".
+- [x] **Auth webhook và tách dữ liệu theo workspace (mục 11 #2).** Auth đã chốt **HMAC-SHA256 kèm timestamp** (đổi từ API key tĩnh ngày 2026-11-04, xem quyết định #12 và `docs/webhook-vnaip-be.md`). Phần tách dữ liệu theo `datasetKey` (chốt 2026-11-03) đã **bị bỏ ngày 2026-11-04**: mọi sáng kiến nằm chung một tập dữ liệu, xem mục 3.2 dòng 9 và "Điểm mở còn lại".
 - [x] **Hướng A hay B ở luồng 1 (#4).** Đã chọn hướng A (lấy tất cả ứng viên), xem mục 3.2.
 - [x] **Payload Qdrant và chunk (#5, #7).** Đã chốt, xem mục 3.2.
 - [x] **Embedding model và nơi gọi (#6).** Đã chốt `openai/text-embedding-3-small` qua OpenRouter.
@@ -75,7 +75,7 @@ Giai đoạn này không viết code. Chỉ các điểm sau thật sự chặn 
 
 | # | Chủ đề | Quyết định |
 |---|---|---|
-| 1 | Auth webhook và tách dữ liệu theo workspace | Hai key khác nhau. (a) API key chung, giá trị bất kỳ, đặt trong env của app, xác thực VNAIP BE ở webhook. (b) ~~Key phân vùng `datasetKey` do BE gửi...~~ **Đã bỏ ngày 2026-11-04** (dòng 9): không tách dữ liệu theo workspace nữa |
+| 1 | Auth webhook và tách dữ liệu theo workspace | Hai quyết định khác nhau. (a) Auth: ~~API key chung, giá trị bất kỳ, đặt trong env~~ **Đổi sang HMAC-SHA256 kèm timestamp ngày 2026-11-04** (dòng 11): VNAIP BE ký raw body bằng secret dùng chung (`WEBHOOK_HMAC_SECRETS`), gửi `X-Webhook-Signature`/`X-Webhook-Timestamp`; so khớp hằng thời gian, timestamp lệch quá 5 phút bị từ chối (chống replay). (b) ~~Key phân vùng `datasetKey` do BE gửi...~~ **Đã bỏ ngày 2026-11-04** (dòng 9): không tách dữ liệu theo workspace nữa |
 | 2 | Luồng 1 | Hướng A: lấy tất cả ứng viên từ Qdrant rồi để LLM chấm, không embed (1) ở luồng 1 |
 | 3 | Payload Qdrant | `ideaId`, `type`, `title`, nội dung chunk, `metadata`. Có chia chunk, gom theo `ideaId` khi query |
 | 4 | Embedding | `openai/text-embedding-3-small` qua OpenRouter (vector 1536 chiều) |
@@ -86,12 +86,13 @@ Giai đoạn này không viết code. Chỉ các điểm sau thật sự chặn 
 | 9 | Bỏ `datasetKey` (2026-11-04) | Không tách dữ liệu theo workspace: mọi sáng kiến của VNAIP nằm chung một tập dữ liệu trong collection của môi trường. Event không cần `datasetKey` (nếu BE vẫn gửi thì bị bỏ qua). Thay quyết định #1(b). Hệ quả: xem "Điểm mở còn lại" |
 | 10 | Redis (2026-11-04) | Tự host. `maxmemory-policy noeviction`. **AOF tắt** (sẽ bật nếu cần): Redis khởi động lại thì job đang chờ bị mất, nên BE phải gửi lại event chưa thấy được index (an toàn vì index idempotent theo `id`). Tách khỏi Redis cache của BE. Chưa dựng Redis thật; chưa biết có TLS không (code đang đòi `rediss://` trừ localhost) |
 | 11 | Worker (2026-11-04) | Tách khỏi tiến trình web: `src/backend/worker.ts`, chạy bằng `npm run start:worker` (dev: `npm run dev:worker`). Web chỉ là producer, không cần khoá OpenRouter/Qdrant. Job mang đủ `id`, `type`, `title`, `content`, `metadata`, `fileRef` để worker không phải hỏi lại BE |
+| 12 | Auth webhook đổi sang HMAC (2026-11-04) | Thay quyết định #1(a): API key tĩnh → HMAC-SHA256 trên raw body kèm timestamp (`X-Webhook-Timestamp` + `X-Webhook-Signature: sha256=<hex>`), dung sai 5 phút. Giải quyết luôn điểm mở "chống replay" đã ghi ở dòng 94/190 cũ. VNAIP BE cần đổi cách ký request |
 
 **Hệ quả của các quyết định:**
 
 - Hướng A không dùng vector khi truy vấn, nên embedding chỉ phục vụ luồng index. Vector vẫn được lưu để có thể chuyển sang top-k sau này mà không phải index lại.
 - Hướng A gửi toàn bộ ứng viên cho LLM, nên chi phí token và độ trễ tăng theo số sáng kiến; từ khi bỏ `datasetKey` đó là toàn bộ sáng kiến của VNAIP chứ không chỉ một workspace. Tool có `timeoutMs: 15000`. Cần chấm theo batch song song, và nếu đặt trần số ứng viên thì trần đó cắt tuỳ ý (không có độ tương đồng để xếp hạng) nên có thể bỏ sót sáng kiến trùng.
-- API key webhook chỉ chứng minh người gọi biết bí mật. Nên so sánh bằng hàm hằng thời gian (constant-time), chỉ nhận qua HTTPS, có rate limit, và có cách đổi key mà không phải deploy lại code.
+- Auth webhook dùng HMAC-SHA256 kèm timestamp (2026-11-04, thay API key tĩnh): chữ ký tính trên raw body + timestamp bằng secret dùng chung, so khớp hằng thời gian (constant-time), timestamp lệch quá 5 phút bị từ chối và mỗi chữ ký chỉ nhận một lần trong cửa sổ đó (chống replay, `replay-guard.ts`). Vẫn cần chỉ nhận qua HTTPS, có rate limit, và nhiều secret phân tách bằng dấu phẩy để đổi secret không phải deploy lại code.
 
 **Điểm mở còn lại:**
 
@@ -136,7 +137,7 @@ Trạng thái (2026-11-04): khung đã xong và chưa nối vào `server.ts`, n�
 
 ## 5. GĐ2: Luồng index
 
-- [x] Route webhook `POST /webhooks/idea-approved` (`webhook-routes.ts`): API key qua `Authorization: Bearer` hoặc `x-api-key`, so sánh hằng thời gian, nhận nhiều key (`WEBHOOK_API_KEYS`) để đổi key không ngừng nhận event. Validate event (`index-event.ts`), enqueue rồi trả `202`; queue không nhận được thì trả `503`, không bao giờ trả `202` giả. Chưa cấu hình thì trả `503 WEBHOOK_NOT_CONFIGURED` thay vì làm app sập.
+- [x] Route webhook `POST /webhooks/idea-approved` (`webhook-routes.ts`): chữ ký HMAC-SHA256 qua `X-Webhook-Signature` (`sha256=<hex>` trên `${timestamp}.${rawBody}`) và `X-Webhook-Timestamp`, so sánh hằng thời gian, timestamp lệch quá 5 phút bị từ chối. Xác thực chạy **trước khi parse JSON**: header chữ ký/timestamp được kiểm tra trước khi đọc body, body đọc nguyên bytes (`express.raw`) rồi HMAC, sau đó mới parse; sai content-type trả `415`. Route mount **trước** parser JSON chung (`installBodyParsers`) nên Express tự khớp path (hoa/thường, dấu `/` cuối). Chống replay (`replay-guard.ts`): mỗi chữ ký chỉ nhận một lần trong cửa sổ 601 giây (Redis `SET NX EX`, bộ nhớ khi `QUEUE_MOCK_MODE`), gửi lại trả `409 DUPLICATE_DELIVERY`, guard lỗi trả `503` (fail closed), enqueue lỗi thì trả chỗ để gửi lại được; chưa chặn được request bị chặn trước khi tới server (cần version đơn điệu trong event). Nhận nhiều secret (`WEBHOOK_HMAC_SECRETS`) để đổi secret không ngừng nhận event; còn `WEBHOOK_API_KEYS` cũ thì log cảnh báo `webhook_legacy_api_keys_ignored` và biến này không còn được đọc. Validate event (`index-event.ts`), enqueue rồi trả `202`; queue không nhận được thì trả `503`, không bao giờ trả `202` giả. Chưa cấu hình thì trả `503 WEBHOOK_NOT_CONFIGURED` thay vì làm app sập. Hướng dẫn tích hợp gửi cho VNAIP BE (cách ký, test vector, mã lỗi, ví dụ code): `docs/webhook-vnaip-be.md`.
 - [x] Idempotent khi BE gửi lại event (point ID xác định; có test gửi lại không nhân đôi).
 - [x] Queue BullMQ (Redis) chạy tuần tự (mục 3.2, dòng 7), `bullmq-queue.ts` cài giao diện `JobQueue`: worker `concurrency = 1` và giới hạn toàn cục bằng 1, publish chỉ thành công khi Redis đã lưu job (`202` đi sau đó) và có timeout riêng vì BullMQ chờ vô hạn nếu Redis chưa từng kết nối được, mất kết nối thì webhook trả 503 nhanh và tự chạy lại khi Redis sống lại, retry bằng `attempts` + backoff tuỳ chỉnh (lỗi `dead` ném `UnrecoverableError` nên vào tập `failed` ngay), job xong xoá sau 1 giờ và job lỗi xoá sau 14 ngày. Đã thử trên Redis thật cục bộ (12 test, trong đó có kịch bản Redis chết rồi sống lại). **Chưa thử trên Redis hosted** vì chưa có.
 - [x] Worker (`index-job.ts`): chia chunk (`chunker.ts`), embed (mỗi chunk kèm tiêu đề), upsert, rồi mới dọn chunk thừa, nên sáng kiến không biến mất khỏi Qdrant giữa chừng và embedding lỗi thì dữ liệu cũ còn nguyên. Chạy ở tiến trình riêng (mục dưới). Phần file đính kèm xem mục `#TODO` MinIO; `fileRef` hiện được mang theo trong job và bỏ qua, log chỉ ghi `fileSkipped`.
@@ -147,7 +148,7 @@ Trạng thái (2026-11-04): khung đã xong và chưa nối vào `server.ts`, n�
 
 Xong khi: gửi event giả thì thấy point trong Qdrant, gửi lại event không tạo bản ghi trùng, auth sai bị từ chối.
 
-Trạng thái (2026-11-04): đã chạy thật được từ đầu đến cuối với hai tiến trình riêng. 142 test đạt (Node 22; 7 test tích hợp chỉ chạy khi có `REDIS_TEST_URL`), typecheck, build và `sota validate` đạt. Kiểm tra đầu-cuối: web (`server.ts`, **không được cấp khoá OpenRouter/Qdrant**) → BullMQ (Redis cục bộ) → worker (`worker.ts`, tiến trình riêng) → OpenRouter thật → Qdrant Cloud thật, mỗi lần dùng tiền tố khoá và collection riêng rồi xoá. Đạt: worker thiếu cấu hình thoát mã 1; khi chưa có worker, web vẫn trả 202 và job nằm chờ trong Redis; bật worker thì nó nhặt job và ghi 5 chunk; sai key trả 401; gửi lại cùng event không nhân đôi; index lại bản rút gọn dọn còn 1 chunk; tắt worker rồi gửi event khác thì web vẫn trả 202, bật lại thì job được xử lý; hàng đợi và tập `failed` rỗng; SIGTERM tắt êm mã 0 cho cả web lẫn worker; log của cả hai không chứa khoá, `fileRef`, `datasetKey` cũ, tiêu đề hay nội dung. **Còn thiếu để đạt "xong khi" đầy đủ:** phần file/MinIO (`#TODO`), Redis tự host thật (chưa thử TLS, AOF), rate limit và chống replay cho webhook (GĐ5).
+Trạng thái (2026-11-04): đã chạy thật được từ đầu đến cuối với hai tiến trình riêng. 157 test đạt (Node 22; 7 test tích hợp chỉ chạy khi có `REDIS_TEST_URL`), typecheck, build và `sota validate` đạt. Kiểm tra đầu-cuối: web (`server.ts`, **không được cấp khoá OpenRouter/Qdrant**) → BullMQ (Redis cục bộ) → worker (`worker.ts`, tiến trình riêng) → OpenRouter thật → Qdrant Cloud thật, mỗi lần dùng tiền tố khoá và collection riêng rồi xoá. Đạt: worker thiếu cấu hình thoát mã 1; khi chưa có worker, web vẫn trả 202 và job nằm chờ trong Redis; bật worker thì nó nhặt job và ghi 5 chunk; sai key trả 401; gửi lại cùng event không nhân đôi; index lại bản rút gọn dọn còn 1 chunk; tắt worker rồi gửi event khác thì web vẫn trả 202, bật lại thì job được xử lý; hàng đợi và tập `failed` rỗng; SIGTERM tắt êm mã 0 cho cả web lẫn worker; log của cả hai không chứa khoá, `fileRef`, `datasetKey` cũ, tiêu đề hay nội dung. **Còn thiếu để đạt "xong khi" đầy đủ:** phần file/MinIO (`#TODO`), Redis tự host thật (chưa thử TLS, AOF), rate limit cho webhook (GĐ5). Lưu ý: kiểm tra đầu-cuối ở trên làm lúc webhook còn xác thực bằng API key ("sai key trả 401" là của thời đó). Sau khi đổi sang HMAC và thêm chống replay mới chạy lại test tự động và thử tay với hàng đợi/embedding/Qdrant mock; **chưa chạy lại đầu-cuối** với Redis, OpenRouter và Qdrant thật, và `RedisReplayGuard` chưa được thử trên Redis thật.
 
 ## 6. GĐ3: Luồng kiểm tra trùng mới
 
@@ -172,7 +173,8 @@ Xong khi: test giới hạn người gọi (claims không khớp bị từ chố
 
 ## 8. GĐ5: Hardening và release
 
-- [ ] Test bảo mật: replay và timestamp webhook, rate limit, người gọi tool không được phép, cross-environment, SSRF.
+- [x] Test bảo mật webhook: replay (cùng chữ ký, đồng thời, enqueue lỗi, guard lỗi), biên timestamp ±300 giây, định dạng timestamp/chữ ký, content-type, xác thực trước khi parse JSON (`webhook-routes.test.ts`).
+- [ ] Test bảo mật còn lại: rate limit, người gọi tool không được phép, cross-environment, SSRF, và thử `RedisReplayGuard` trên Redis thật.
 - [ ] Log có cấu trúc, health/readiness (kiểm Qdrant với timeout ngắn), theo dõi chi phí token.
 - [ ] Cảnh báo khi worker không chạy hoặc hàng đợi tồn đọng (web vẫn trả 202 khi worker chết), và khi có job vào tập `failed`.
 - [ ] Chỉnh ngưỡng và `k` bằng dữ liệu thật.
@@ -187,7 +189,7 @@ Xong khi: test giới hạn người gọi (claims không khớp bị từ chố
 | Hướng A vượt timeout 15 giây hoặc tốn token khi dữ liệu tăng | GĐ3, GĐ5 | Chấm batch song song, đo thời gian với dữ liệu thật, đặt ngưỡng số sáng kiến để chuyển sang hướng B (vector đã được lưu sẵn) |
 | Đổi embedding model sau khi index | GĐ1, GĐ4 | Ghi tên model và version vào payload hoặc tên collection, cần reindex khi đổi |
 | Redis tự host không bật AOF: khởi động lại là mất job đang chờ | GĐ2 | BE gửi lại event chưa thấy được index (idempotent theo `id`); bật AOF khi cần; luôn đặt `noeviction`; hàng trong bộ nhớ chỉ dùng cục bộ (`QUEUE_MOCK_MODE=true`), không bao giờ bật ở hosted |
-| Webhook là điểm vào công khai, không qua Core | GĐ2, GĐ5 | API key so sánh hằng thời gian, nhiều key để đổi key; còn thiếu rate limit và chống replay (GĐ5) |
+| Webhook là điểm vào công khai, không qua Core | GĐ2, GĐ5 | HMAC-SHA256 kèm timestamp, so sánh hằng thời gian, nhiều secret để đổi secret, chống replay bằng dung sai timestamp ±5 phút cộng với việc mỗi chữ ký chỉ nhận một lần (`replay-guard.ts`; 2026-11-04, đổi từ API key); còn thiếu rate limit (GĐ5) và chưa chặn được request bị chặn trước khi tới server rồi mới replay (cần version đơn điệu trong event) |
 | Web và worker cấu hình lệch (`REDIS_URL`, `QUEUE_PREFIX`, `QUEUE_NAME`) | GĐ2, GĐ5 | Job nằm trong Redis mà không ai xử lý và không có lỗi. Đặt cùng một bộ giá trị cho hai dịch vụ; cảnh báo hàng đợi tồn đọng (GĐ5) |
 | Worker chết nhưng web vẫn trả 202 | GĐ2, GĐ5 | Job dồn trong Redis; `noeviction` nên khi Redis đầy thì publish lỗi và webhook trả 503. Cần theo dõi độ sâu hàng đợi và tuổi job cũ nhất (GĐ5) |
 | Cache BE trả kết quả cũ | GĐ4 | Thống nhất chính sách hết hạn với BE |

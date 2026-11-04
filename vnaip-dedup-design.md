@@ -219,7 +219,7 @@ Nói "Sota App expose 2 API cho VNAIP BE" chỉ đúng một nửa vì luồng k
 |---|---|---|
 | VNAIP BE → SotaAgents Core | Service account | Đã có trong thiết kế |
 | SotaAgents Core → Sota App | JWT invocation | Đã có trong thiết kế |
-| VNAIP BE → Sota App (webhook index) | Chưa chốt | **Cần hỏi anh Hưng** |
+| VNAIP BE → Sota App (webhook index) | HMAC-SHA256 kèm timestamp | Đã chốt phía app (2026-11-04), chờ BE triển khai ký. Xem `docs/ke-hoach-phat-trien.md` (quyết định #12) và `docs/webhook-vnaip-be.md` |
 
 ### 7.2 Webhook là gì
 
@@ -235,7 +235,7 @@ Webhook là một endpoint HTTP (thường là `POST`) do Sota App cung cấp, v
 | JWT | BE gửi token có chữ ký, có hạn dùng | Đồng bộ với phần JWT đang dùng ở đoạn Core → Sota App | Cần quản lý khoá và vòng đời token |
 | Chữ ký HMAC | BE ký nội dung event bằng secret chung, gửi chữ ký trong header, Sota App tính lại để kiểm tra | Đảm bảo nội dung không bị sửa trên đường đi | Cần thống nhất cách tạo chữ ký, tránh replay (thêm timestamp) |
 
-Gợi ý: nếu muốn đồng nhất với hệ thống hiện tại thì dùng JWT. Nếu cần đảm bảo toàn vẹn nội dung thì dùng HMAC. Cuối cùng do anh Hưng quyết định.
+Gợi ý: nếu muốn đồng nhất với hệ thống hiện tại thì dùng JWT. Nếu cần đảm bảo toàn vẹn nội dung thì dùng HMAC. Cuối cùng do anh Hưng quyết định. **Kết quả (2026-11-04): chọn HMAC kèm timestamp**, thêm chống replay bằng cách mỗi chữ ký chỉ nhận một lần.
 
 ## 8. Embedding và LLM chấm điểm
 
@@ -294,7 +294,7 @@ Nếu một sáng kiến được chia thành nhiều chunk (nhiều point), c�
 | # | Câu hỏi | Tác động nếu khác hiện tại | Trạng thái |
 |---|---|---|---|
 | 1 | VNAIP BE vẫn gọi kiểm tra trùng qua SotaAgents Core, hay gọi thẳng Sota App? | Nếu gọi thẳng, bỏ Core khỏi luồng 1 và sửa diagram | Chưa xác nhận |
-| 2 | Kiểu auth cho webhook index: JWT, API key hay HMAC? | Sota App phải chấp nhận hai kiểu auth, nên chốt cho thống nhất | Chưa xác nhận |
+| 2 | Kiểu auth cho webhook index: JWT, API key hay HMAC? | Sota App phải chấp nhận hai kiểu auth, nên chốt cho thống nhất | Đã chốt HMAC kèm timestamp (2026-11-04); chờ BE triển khai ký, xem `docs/webhook-vnaip-be.md` |
 | 3 | BE có cần nhận kết quả index về (callback trạng thái) không? | Nếu có, thêm callback khi job xong hoặc lỗi | Chưa xác nhận |
 | 4 | Luồng kiểm tra trùng có còn cần embedding không (hướng A hay B ở mục 4.3.1)? | Quyết định giữ hay bỏ bước embedding và cách truy vấn Qdrant | Chưa xác nhận |
 | 5 | Payload Qdrant lưu những trường nào? | Ảnh hưởng đến việc có cần bước lấy nội dung ở nguồn khác | Chưa xác nhận |
@@ -319,7 +319,7 @@ Nếu một sáng kiến được chia thành nhiều chunk (nhiều point), c�
 | Độ trễ index | Sáng kiến vừa duyệt chưa chắc đã được index ngay, kiểm tra trùng trong khoảng này có thể bỏ sót. Queue tuần tự làm độ trễ tăng khi có nhiều event |
 | Hiệu năng luồng 1 | Nếu lấy tất cả ứng viên, chi phí và độ trễ tăng theo số lượng sáng kiến. Cân nhắc hướng B (top-k) |
 | Cache | Redis key = hash nội dung. Khi dữ liệu trong Qdrant đổi (có sáng kiến mới), kết quả cache cũ có thể không còn chính xác, cần chính sách hết hạn |
-| Bảo mật webhook | Chống replay (timestamp, nonce), giới hạn tốc độ, và chỉ nhận từ BE |
+| Bảo mật webhook | Chống replay đã làm (timestamp ±5 phút và mỗi chữ ký chỉ nhận một lần, `replay-guard.ts`). Còn thiếu giới hạn tốc độ và chỉ nhận từ BE |
 
 ## 13. Thuật ngữ
 

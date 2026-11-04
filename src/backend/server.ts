@@ -5,12 +5,11 @@ import { requireSotaInvocation } from './sota-auth.js';
 import { registerToolRoutes } from './tool-routes.js';
 import { createErrorHandler } from './error-handler.js';
 import { startWebhookService } from './index-service.js';
-import { registerWebhookRoutes } from './webhook-routes.js';
+import { installBodyParsers } from './webhook-routes.js';
 
 const appId = 'vnaip-dedup';
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '1mb' }));
 app.use((request, response, next) => {
   const startedAt = performance.now();
   const requestId = request.header('x-request-id') ?? randomUUID();
@@ -24,6 +23,17 @@ app.use((request, response, next) => {
   }));
   next();
 });
+
+// Webhook index do VNAIP BE gọi thẳng (không qua Core, không có invocation JWT):
+// tự xác thực bằng chữ ký HMAC-SHA256 trên raw body và chỉ đẩy job vào hàng đợi.
+// Worker index chạy ở tiến trình riêng (worker.ts), trừ QUEUE_MOCK_MODE=true khi
+// cục bộ. Thiếu cấu hình thì startWebhookService trả null và webhook trả 503,
+// app vẫn khởi động bình thường.
+const webhookService = await startWebhookService();
+// Route webhook được mount TRƯỚC parser JSON chung (installBodyParsers) để nó tự
+// đọc raw body cho chữ ký HMAC; Express tự quyết path nào khớp nên không cần
+// loại trừ path thủ công. Mọi route cần req.body phải đăng ký SAU dòng này.
+installBodyParsers(app, webhookService?.webhook ?? null);
 
 app.get('/health', (_request, response) => {
   response.json({ status: 'ok', appId });
@@ -43,13 +53,6 @@ app.get('/api/hello', requireSotaInvocation(appId, 'app:http'), (_request, respo
 });
 
 registerToolRoutes(app, appId);
-
-// Webhook index do VNAIP BE gọi thẳng (không qua Core, không có invocation JWT):
-// tự xác thực bằng API key và chỉ đẩy job vào hàng đợi. Worker index chạy ở tiến
-// trình riêng (worker.ts), trừ QUEUE_MOCK_MODE=true khi cục bộ. Thiếu cấu hình
-// thì startWebhookService trả null và webhook trả 503, app vẫn khởi động bình thường.
-const webhookService = await startWebhookService();
-registerWebhookRoutes(app, webhookService?.webhook ?? null);
 
 app.use(createErrorHandler(log));
 

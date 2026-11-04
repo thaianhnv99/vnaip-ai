@@ -18,7 +18,7 @@ import {
 } from "./index-job.js";
 import {
   WebhookConfigError,
-  loadWebhookApiKeys,
+  loadWebhookHmacSecrets,
   type WebhookDependencies,
 } from "./webhook-routes.js";
 import {
@@ -26,6 +26,11 @@ import {
   BullMqJobQueue,
   loadBullMqConfig,
 } from "./bullmq-queue.js";
+import {
+  InMemoryReplayGuard,
+  createRedisReplayGuard,
+  type ReplayGuard,
+} from "./replay-guard.js";
 
 /**
  * Luồng index: webhook → queue → worker → embedding → Qdrant, chia hai vai chạy
@@ -70,8 +75,16 @@ export async function startWebhookService(
   log: JobLogger = defaultLog,
 ): Promise<WebhookService | null> {
   try {
-    const apiKeys = loadWebhookApiKeys(env);
+    const hmacSecrets = loadWebhookHmacSecrets(env);
+    // Cách xác thực cũ (x-api-key) không còn được nhận: nhắc để khỏi tưởng nó còn hiệu lực.
+    if ((env.WEBHOOK_API_KEYS ?? "").trim().length > 0) {
+      log("error", "webhook_legacy_api_keys_ignored", {
+        message:
+          "WEBHOOK_API_KEYS không còn được dùng; webhook chỉ nhận chữ ký HMAC (WEBHOOK_HMAC_SECRETS). VNAIP BE phải đổi sang ký HMAC cùng lúc.",
+      });
+    }
     const queue = createQueueFromEnv(env, log);
+    const replayGuard = createReplayGuardFromEnv(env, log);
 
     // Hàng đợi trong bộ nhớ không chia sẻ được giữa các tiến trình nên worker
     // phải chạy cùng tiến trình. Với BullMQ thì worker là tiến trình riêng.
@@ -89,10 +102,11 @@ export async function startWebhookService(
     });
 
     return {
-      webhook: { queue, apiKeys, log },
+      webhook: { queue, hmacSecrets, replayGuard, log },
       stop: async () => {
         await consumer?.stop();
         await queue.close?.();
+        await replayGuard.close?.();
       },
     };
   } catch (error) {
@@ -173,6 +187,16 @@ function isMockQueue(env: NodeJS.ProcessEnv): boolean {
 function createQueueFromEnv(env: NodeJS.ProcessEnv, log: JobLogger): JobQueue<IndexJob> {
   if (isMockQueue(env)) return new InMemoryJobQueue<IndexJob>();
   return new BullMqJobQueue<IndexJob>(loadBullMqConfig(env, loadRetryPolicy(env)), log);
+}
+
+/**
+ * Chống replay dùng chung Redis với hàng đợi để mọi instance web cùng thấy một
+ * tập chữ ký đã nhận. Chế độ mock chỉ có một tiến trình nên dùng bộ nhớ.
+ */
+function createReplayGuardFromEnv(env: NodeJS.ProcessEnv, log: JobLogger): ReplayGuard {
+  if (isMockQueue(env)) return new InMemoryReplayGuard();
+  const config = loadBullMqConfig(env, loadRetryPolicy(env));
+  return createRedisReplayGuard(config.connection, `${config.prefix}:webhook-replay:`, log);
 }
 
 /** Chỉ lỗi cấu hình do app tự tạo mới được ghi message; lỗi khác chỉ ghi tên. */

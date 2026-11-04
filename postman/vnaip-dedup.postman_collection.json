@@ -1,9 +1,33 @@
 {
   "info": {
     "name": "vnaip-dedup (local)",
-    "description": "2 API test local: GET /health va POST /webhooks/idea-approved. Chay 'npm run dev:backend' truoc, dung environment 'vnaip-dedup (local)'.",
+    "description": "2 API test local: GET /health va POST /webhooks/idea-approved. Chay 'npm run dev:backend' truoc, dung environment 'vnaip-dedup (local)'. Chu ky HMAC cua webhook duoc tinh o pre-request script cap collection (webhookHmacSecret trong environment phai trung WEBHOOK_HMAC_SECRETS cua app).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Ky MOI request goi webhook idea-approved (HMAC-SHA256 tren `${timestamp}.${rawBody}`,",
+          "// giong server xac minh). Request khac (health, Qdrant) khong bi dong cham.",
+          "if (pm.request.url.getPath().endsWith('/webhooks/idea-approved')) {",
+          "  const secret = pm.variables.get('webhookHmacSecret');",
+          "  if (!secret) throw new Error('Thieu bien webhookHmacSecret trong environment');",
+          "  // Phan giai {{bien}} trong body MOT lan roi ghi nguoc vao request: chuoi duoc ky",
+          "  // chinh la chuoi duoc gui (bien dong nhu {{$guid}} khong bi sinh lai luc gui).",
+          "  const rawBody = pm.variables.replaceIn(pm.request.body.raw);",
+          "  pm.request.body.raw = rawBody;",
+          "  const timestamp = Math.floor(Date.now() / 1000).toString();",
+          "  const signature = CryptoJS.HmacSHA256(`${timestamp}.${rawBody}`, secret).toString(CryptoJS.enc.Hex);",
+          "  pm.variables.set('webhookTimestamp', timestamp);",
+          "  pm.variables.set('webhookSignature', `sha256=${signature}`);",
+          "}"
+        ]
+      }
+    }
+  ],
   "item": [
     {
       "name": "Health check",
@@ -39,7 +63,8 @@
         "method": "POST",
         "header": [
           { "key": "Content-Type", "value": "application/json" },
-          { "key": "x-api-key", "value": "{{webhookApiKey}}" }
+          { "key": "X-Webhook-Timestamp", "value": "{{webhookTimestamp}}" },
+          { "key": "X-Webhook-Signature", "value": "{{webhookSignature}}" }
         ],
         "body": {
           "mode": "raw",
@@ -69,16 +94,18 @@
       ]
     },
     {
-      "name": "Webhook idea-approved - sai API key (401)",
+      "name": "Webhook idea-approved - sai chu ky (401)",
       "request": {
+        "description": "Timestamp hop le (do pre-request cap collection dat) nhung signature co dinh sai, de kiem tra 401.",
         "method": "POST",
         "header": [
           { "key": "Content-Type", "value": "application/json" },
-          { "key": "x-api-key", "value": "sai-key-khong-hop-le" }
+          { "key": "X-Webhook-Timestamp", "value": "{{webhookTimestamp}}" },
+          { "key": "X-Webhook-Signature", "value": "sha256=0000000000000000000000000000000000000000000000000000000000000000" }
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"id\": \"idea-002\",\n  \"type\": \"initiative\",\n  \"title\": \"Test sai key\",\n  \"content\": \"Noi dung.\"\n}"
+          "raw": "{\n  \"id\": \"idea-002\",\n  \"type\": \"initiative\",\n  \"title\": \"Test sai chu ky\",\n  \"content\": \"Noi dung.\"\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/webhooks/idea-approved",
@@ -161,7 +188,8 @@
         "method": "POST",
         "header": [
           { "key": "Content-Type", "value": "application/json" },
-          { "key": "x-api-key", "value": "{{webhookApiKey}}" }
+          { "key": "X-Webhook-Timestamp", "value": "{{webhookTimestamp}}" },
+          { "key": "X-Webhook-Signature", "value": "{{webhookSignature}}" }
         ],
         "body": {
           "mode": "raw",
