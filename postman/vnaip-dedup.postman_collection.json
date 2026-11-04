@@ -1,0 +1,192 @@
+{
+  "info": {
+    "name": "vnaip-dedup (local)",
+    "description": "2 API test local: GET /health va POST /webhooks/idea-approved. Chay 'npm run dev:backend' truoc, dung environment 'vnaip-dedup (local)'.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('body co status ok', () => {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.status).to.eql('ok');",
+              "  pm.expect(body.appId).to.eql('vnaip-dedup');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhook idea-approved - accepted (202)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-api-key", "value": "{{webhookApiKey}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"idea-001\",\n  \"type\": \"initiative\",\n  \"title\": \"Sang kien thu nghiem\",\n  \"content\": \"Noi dung chi tiet cua sang kien de test webhook.\",\n  \"metadata\": { \"author\": \"tester\" }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/idea-approved",
+          "host": ["{{baseUrl}}"],
+          "path": ["webhooks", "idea-approved"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', () => pm.response.to.have.status(202));",
+              "pm.test('body co jobId', () => {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.status).to.eql('accepted');",
+              "  pm.expect(body.jobId).to.be.a('string');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhook idea-approved - sai API key (401)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-api-key", "value": "sai-key-khong-hop-le" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"idea-002\",\n  \"type\": \"initiative\",\n  \"title\": \"Test sai key\",\n  \"content\": \"Noi dung.\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/idea-approved",
+          "host": ["{{baseUrl}}"],
+          "path": ["webhooks", "idea-approved"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 401', () => pm.response.to.have.status(401));",
+              "pm.test('code AUTH_ERROR', () => {",
+              "  pm.expect(pm.response.json().code).to.eql('AUTH_ERROR');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Qdrant - scroll tat ca point trong collection",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "api-key", "value": "{{qdrantApiKey}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"limit\": 20,\n  \"with_payload\": true,\n  \"with_vector\": false\n}"
+        },
+        "url": {
+          "raw": "{{qdrantUrl}}/collections/{{qdrantCollection}}/points/scroll",
+          "host": ["{{qdrantUrl}}"],
+          "path": ["collections", "{{qdrantCollection}}", "points", "scroll"]
+        },
+        "description": "Khong con datasetKey (bo 2026-11-04): moi sang kien nam chung mot collection. Them filter ideaId neu chi muon xem mot sang kien."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Qdrant - thong tin collection",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "api-key", "value": "{{qdrantApiKey}}" }],
+        "url": {
+          "raw": "{{qdrantUrl}}/collections/{{qdrantCollection}}",
+          "host": ["{{qdrantUrl}}"],
+          "path": ["collections", "{{qdrantCollection}}"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhook idea-approved - thieu truong bat buoc (400)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-api-key", "value": "{{webhookApiKey}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"idea-003\",\n  \"type\": \"initiative\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/idea-approved",
+          "host": ["{{baseUrl}}"],
+          "path": ["webhooks", "idea-approved"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));",
+              "pm.test('code INVALID_EVENT', () => {",
+              "  pm.expect(pm.response.json().code).to.eql('INVALID_EVENT');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
