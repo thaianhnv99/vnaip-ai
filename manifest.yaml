@@ -1,6 +1,6 @@
 manifestSchemaVersion: 3
 appId: vnaip-dedup
-version: 1.0.2
+version: 1.0.3
 displayName: "VNAIP Dedup"
 description: "Kiểm tra hồ sơ ứng viên tương tự trong hệ thống VNAIP."
 publisher:
@@ -26,7 +26,7 @@ contributes:
       route: POST /tools/check-duplicates
       inputSchema: src/schemas/dedup-input.schema.json
       outputSchema: src/schemas/dedup-output.schema.json
-      timeoutMs: 15000
+      timeoutMs: 30000
       failure_mode: abort
 
 service:

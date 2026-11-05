@@ -297,6 +297,65 @@ test('log thành công và thất bại ghi mã, số lượng, thời gian; kh�
   assert.doesNotMatch(JSON.stringify(lines), /BÍ MẬT/);
 });
 
+test('log lỗi chỉ ghi các field detail trong allow-list, đúng kiểu và bị cắt độ dài', async () => {
+  const { lines, log } = captureLog();
+  const handler = createCheckDuplicatesHandler(
+    {
+      findCandidates: async () => [{ id: 'a', type: 'solutions', title: 'A', content: 'x' }],
+      scoreCandidates: async () => {
+        throw new LlmScorerError('BAD_OUTPUT', 'Model trả JSON sai định dạng', {
+          detail: {
+            reason: 'invalid_json',
+            contentLength: 42,
+            finishReason: 'stop'.padEnd(500, 'x'),
+            jsonType: { BÍ_MẬT: 'object' },
+            topLevelKeyCount: Number.NaN,
+            expectedCount: 5,
+            scoredCount: 3,
+            contentHead: 'BÍ MẬT XYZ-123',
+            topLevelKeys: ['BÍ MẬT XYZ-123'],
+          },
+        });
+      },
+    },
+    {},
+    log,
+  );
+  const { request, response } = fakeRequestResponse({ body: { input: validInput } });
+  await handler(request, response, () => {});
+
+  const failed = lines.find((l) => l.event === 'check_duplicates_failed');
+  assert.equal(failed?.code, 'SCORING_UNAVAILABLE');
+  assert.equal(failed?.cause, 'BAD_OUTPUT');
+  assert.deepEqual(failed?.detail, {
+    reason: 'invalid_json',
+    finishReason: 'stop'.padEnd(64, 'x'),
+    contentLength: 42,
+    expectedCount: 5,
+    scoredCount: 3,
+  });
+  assert.doesNotMatch(JSON.stringify(lines), /BÍ MẬT|BÍ_MẬT|XYZ-123/);
+});
+
+test('log lỗi không có field detail khi lỗi gốc không kèm detail hợp lệ', async () => {
+  const { lines, log } = captureLog();
+  const handler = createCheckDuplicatesHandler(
+    {
+      findCandidates: async () => [{ id: 'a', type: 'solutions', title: 'A', content: 'x' }],
+      scoreCandidates: async () => {
+        throw new LlmScorerError('BAD_OUTPUT', 'x', { detail: { contentHead: 'BÍ MẬT' } });
+      },
+    },
+    {},
+    log,
+  );
+  const { request, response } = fakeRequestResponse({ body: { input: validInput } });
+  await handler(request, response, () => {});
+
+  const failed = lines.find((l) => l.event === 'check_duplicates_failed');
+  assert.equal('detail' in (failed ?? {}), false);
+});
+
 test('buildDependencies: thiếu cấu hình Qdrant ném NOT_CONFIGURED (không âm thầm dùng dữ liệu giả)', () => {
   assert.throws(
     () => buildDependencies({ LLM_MOCK_MODE: 'true' }),

@@ -48,15 +48,23 @@ export type LlmScorerErrorCode =
 
 export class LlmScorerError extends Error {
   readonly code: LlmScorerErrorCode;
+  /**
+   * Meta AN TOÀN để log debug: chỉ mã lý do, finish_reason, độ dài, kiểu JSON và số
+   * key của response. Không bao giờ chứa ký tự nào của content model sinh (bám sát
+   * hồ sơ nên có thể lộ nội dung hồ sơ), input của người dùng hay API key. Route chỉ
+   * log các field nằm trong allow-list (xem `rootErrorDetail`).
+   */
+  readonly detail?: Record<string, unknown>;
 
   constructor(
     code: LlmScorerErrorCode,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; detail?: Record<string, unknown> },
   ) {
     super(message, options);
     this.code = code;
     this.name = "LlmScorerError";
+    this.detail = options?.detail;
   }
 }
 
@@ -76,7 +84,7 @@ export function loadLlmScorerConfig(
     apiKey: env.OPENROUTER_API_KEY ?? "",
     // Không có model mặc định: chọn model là quyết định về chi phí và chất lượng.
     model: env.LLM_SCORER_MODEL ?? "",
-    timeoutMs: positiveInteger(env.LLM_SCORER_TIMEOUT_MS, 10000),
+    timeoutMs: positiveInteger(env.LLM_SCORER_TIMEOUT_MS, 25000),
     batchSize: positiveInteger(env.LLM_SCORER_BATCH_SIZE, 5),
     concurrency: positiveInteger(env.LLM_SCORER_CONCURRENCY, 20),
     maxCandidateChars: positiveInteger(env.LLM_SCORER_MAX_CANDIDATE_CHARS, 4000),
@@ -265,7 +273,48 @@ async function scoreBatch(
     );
   }
 
-  return parseModelOutput(body);
+  const matches = parseModelOutput(body);
+  assertBatchCovered(matches, batch);
+  return matches;
+}
+
+/**
+ * Mỗi ứng viên trong batch phải có ít nhất một mục chấm điểm dùng được. Thiếu mục
+ * (model bỏ sót, sai id) hay mục hỏng (percent là chuỗi/số lẻ/ngoài 0..100, reason
+ * rỗng) đều bị `checkDuplicates()` âm thầm loại, và ứng viên đó thành "không trùng"
+ * dù có thể là sáng kiến trùng thật. Nên coi cả batch là BAD_OUTPUT, cùng nguyên tắc
+ * "một batch lỗi thì cả lời gọi lỗi" ở đầu file. Mục thừa (id không thuộc batch) vẫn
+ * được bỏ qua ở `checkDuplicates()`.
+ */
+function assertBatchCovered(matches: RawModelMatch[], batch: Candidate[]): void {
+  const batchIds = new Set(batch.map((candidate) => candidate.id));
+  const scored = new Set<string>();
+  for (const match of matches) {
+    if (batchIds.has(match.id) && isUsableScore(match)) scored.add(match.id);
+  }
+  if (scored.size < batchIds.size) {
+    throw new LlmScorerError(
+      "BAD_OUTPUT",
+      "Model không chấm điểm hợp lệ cho đủ ứng viên trong batch",
+      {
+        detail: {
+          reason: "incomplete_scores",
+          expectedCount: batchIds.size,
+          scoredCount: scored.size,
+        },
+      },
+    );
+  }
+}
+
+/** Phải khớp điều kiện chấp nhận một mục ở `checkDuplicates()` (dedup.ts). */
+function isUsableScore(match: RawModelMatch): boolean {
+  return (
+    Number.isInteger(match.percent) &&
+    match.percent >= 0 &&
+    match.percent <= 100 &&
+    match.reason.trim().length > 0
+  );
 }
 
 /**
@@ -276,13 +325,16 @@ async function scoreBatch(
 function parseModelOutput(body: unknown): RawModelMatch[] {
   const content = extractChatContent(body);
   if (content === null) {
-    throw new LlmScorerError("BAD_OUTPUT", "Response của model thiếu nội dung chat");
+    throw new LlmScorerError("BAD_OUTPUT", "Response của model thiếu nội dung chat", {
+      detail: { reason: "no_content", finishReason: finishReason(body) },
+    });
   }
   // Output bị cắt giữa chừng sẽ là JSON hỏng; nói thẳng nguyên nhân thay vì "sai định dạng".
   if (finishReason(body) === "length") {
     throw new LlmScorerError(
       "BAD_OUTPUT",
       "Output của model bị cắt vì hết giới hạn token (max_tokens)",
+      { detail: { reason: "truncated", contentLength: content.length } },
     );
   }
 
@@ -292,11 +344,21 @@ function parseModelOutput(body: unknown): RawModelMatch[] {
   } catch (error) {
     throw new LlmScorerError("BAD_OUTPUT", "Model trả JSON sai định dạng", {
       cause: error,
+      // Không ghi bất kỳ ký tự nào của content: output model bám sát hồ sơ nên có thể
+      // chứa nội dung hồ sơ (kể cả khi model từ chối hoặc bị prompt injection).
+      detail: { reason: "invalid_json", contentLength: content.length },
     });
   }
 
   if (!isRecord(parsed) || !Array.isArray(parsed.matches)) {
-    throw new LlmScorerError("BAD_OUTPUT", "Model trả JSON thiếu field matches[]");
+    throw new LlmScorerError("BAD_OUTPUT", "Model trả JSON thiếu field matches[]", {
+      // Tên key do model quyết định nên không ghi; chỉ ghi kiểu JSON và số key.
+      detail: {
+        reason: "missing_matches_field",
+        jsonType: jsonTypeOf(parsed),
+        ...(isRecord(parsed) ? { topLevelKeyCount: Object.keys(parsed).length } : {}),
+      },
+    });
   }
 
   const matches: RawModelMatch[] = [];
@@ -312,8 +374,8 @@ function parseModelOutput(body: unknown): RawModelMatch[] {
       // percent / 100); percent là giá trị chuẩn duy nhất tin dùng từ model.
       matches.push({ id: raw.id, percent: raw.percent, reason: raw.reason });
     }
-    // Entry sai định dạng bị bỏ qua ở đây; checkDuplicates() không cần biết
-    // runtime shape thô của provider.
+    // Entry sai kiểu bị bỏ qua ở đây; scoreBatch() sẽ báo BAD_OUTPUT nếu vì vậy mà
+    // một ứng viên của batch không còn mục chấm điểm dùng được (assertBatchCovered).
   }
 
   return matches;
@@ -323,6 +385,11 @@ function parseModelOutput(body: unknown): RawModelMatch[] {
 function stripCodeFence(text: string): string {
   const fenced = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i.exec(text);
   return fenced ? fenced[1]! : text;
+}
+
+function jsonTypeOf(value: unknown): string {
+  if (value === null) return "null";
+  return Array.isArray(value) ? "array" : typeof value;
 }
 
 function finishReason(body: unknown): unknown {

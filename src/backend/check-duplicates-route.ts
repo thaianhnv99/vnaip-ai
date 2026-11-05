@@ -22,10 +22,11 @@ import { VectorStoreError, lazyEnsureCollections } from "./vector-store.js";
 const DEFAULT_CANDIDATE_LIMIT = 100;
 const MAX_CANDIDATE_LIMIT = 500;
 /**
- * Tổng thời gian cho cả lời gọi, nhỏ hơn `timeoutMs: 15000` của tool trong
- * manifest để app tự trả lỗi có mã thay vì để Core cắt ngang.
+ * Tổng thời gian cho cả lời gọi, nhỏ hơn `timeoutMs: 30000` của tool trong
+ * manifest để app tự trả lỗi có mã thay vì để Core cắt ngang. Đổi `timeoutMs` trong
+ * manifest thì phải đổi cả giá trị này (và `LLM_SCORER_TIMEOUT_MS` mặc định).
  */
-const DEFAULT_DEADLINE_MS = 13000;
+const DEFAULT_DEADLINE_MS = 28000;
 
 function loadCandidateLimit(env: NodeJS.ProcessEnv): number {
   const raw = Number(env.CHECK_DUPLICATES_CANDIDATE_LIMIT);
@@ -127,6 +128,7 @@ export function createCheckDuplicatesHandler(
       response.json(output);
     } catch (error) {
       const { status, code, message } = mapErrorToResponse(error);
+      const detail = rootErrorDetail(error);
       log("error", "check_duplicates_failed", {
         requestId,
         code,
@@ -136,6 +138,9 @@ export function createCheckDuplicatesHandler(
         ...(rootErrorCode(error) ? { cause: rootErrorCode(error) } : {}),
         // Ngoại lệ: lỗi thiếu cấu hình do chính app tạo, message chỉ nêu tên biến môi trường.
         ...(isNotConfigured(error) ? { message: (error as Error).message } : {}),
+        // Meta AN TOÀN về hình dạng response của LLM provider (finish_reason, độ dài, kiểu
+        // JSON), đã lọc qua allow-list — không chứa nội dung model sinh hay hồ sơ người dùng.
+        ...(detail ? { detail } : {}),
       });
       response.status(status).json({ code, message });
     }
@@ -208,6 +213,42 @@ function rootErrorCode(error: unknown): string | undefined {
   const source = error instanceof DedupError ? error.cause : error;
   const code = (source as { code?: unknown } | null)?.code;
   return typeof code === "string" ? code : undefined;
+}
+
+/** Field của `detail` được phép vào log, theo kiểu; field khác bị bỏ (allow-list). */
+const DETAIL_STRING_FIELDS = ["reason", "finishReason", "jsonType"] as const;
+const DETAIL_NUMBER_FIELDS = [
+  "contentLength",
+  "topLevelKeyCount",
+  "expectedCount",
+  "scoredCount",
+] as const;
+const DETAIL_MAX_STRING_LENGTH = 64;
+
+/**
+ * Meta AN TOÀN kèm theo lỗi downstream (hiện chỉ LlmScorerError đặt), ví dụ
+ * finish_reason hay độ dài output của model — dùng để debug BAD_OUTPUT.
+ * Chỉ lấy field trong allow-list, đúng kiểu và có giới hạn độ dài, để dù nguồn có
+ * đặt thêm field hay giá trị do model/provider kiểm soát thì log cũng không lộ
+ * hồ sơ người dùng hay phình to.
+ */
+function rootErrorDetail(error: unknown): Record<string, string | number> | undefined {
+  const source = error instanceof DedupError ? error.cause : error;
+  const detail = (source as { detail?: unknown } | null)?.detail;
+  if (!isRecord(detail)) return undefined;
+
+  const safe: Record<string, string | number> = {};
+  for (const key of DETAIL_STRING_FIELDS) {
+    const value = detail[key];
+    if (typeof value === "string") {
+      safe[key] = value.slice(0, DETAIL_MAX_STRING_LENGTH);
+    }
+  }
+  for (const key of DETAIL_NUMBER_FIELDS) {
+    const value = detail[key];
+    if (typeof value === "number" && Number.isFinite(value)) safe[key] = value;
+  }
+  return Object.keys(safe).length > 0 ? safe : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

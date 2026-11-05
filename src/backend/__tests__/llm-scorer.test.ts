@@ -339,20 +339,135 @@ test("output hỏng của model là BAD_OUTPUT", async () => {
   }
 });
 
-test("chấp nhận JSON bọc trong code fence; bỏ qua mục sai định dạng", async () => {
+test("BAD_OUTPUT.detail chỉ chứa meta, không chứa ký tự nào của content hay tên key do model sinh", async () => {
+  const secret = "BÍ MẬT XYZ-123";
+  const cases: Array<{ response: ReturnType<typeof chatContent>; expected: Record<string, unknown> }> = [
+    {
+      response: chatContent(`${secret} không phải JSON`),
+      expected: { reason: "invalid_json", contentLength: `${secret} không phải JSON`.length },
+    },
+    {
+      response: chatContent(JSON.stringify({ [secret]: [] })),
+      expected: { reason: "missing_matches_field", jsonType: "object", topLevelKeyCount: 1 },
+    },
+    {
+      response: chatContent(JSON.stringify([{ id: secret }])),
+      expected: { reason: "missing_matches_field", jsonType: "array" },
+    },
+    {
+      response: chatContent("null"),
+      expected: { reason: "missing_matches_field", jsonType: "null" },
+    },
+  ];
+
+  for (const { response, expected } of cases) {
+    const server = await startFakeServer(() => response);
+    try {
+      await assert.rejects(
+        () => scoreCandidatesWithLlm(input, candidates(1), config(server.origin), farFuture()),
+        (error: unknown) => {
+          assert.ok(error instanceof LlmScorerError);
+          assert.equal(error.code, "BAD_OUTPUT");
+          assert.deepEqual(error.detail, expected);
+          assert.doesNotMatch(JSON.stringify(error.detail), /BÍ MẬT|XYZ-123/);
+          return true;
+        },
+      );
+    } finally {
+      await server.close();
+    }
+  }
+});
+
+test("chấp nhận JSON bọc trong code fence; bỏ qua mục thừa sai định dạng khi mọi ứng viên đã có mục dùng được", async () => {
   const payload = JSON.stringify({
     matches: [
       { id: "c000", percent: 80, reason: "giống" },
-      { id: "c001", percent: "cao", reason: "percent sai kiểu" },
       { id: "", percent: 10, reason: "id rỗng" },
-      { id: "c002", percent: 20 },
+      { id: "c000", percent: "cao", reason: "mục thừa, percent sai kiểu" },
+      { id: "khong-thuoc-batch", percent: 99, reason: "id lạ" },
       "chuỗi lạ",
     ],
   });
   const server = await startFakeServer(() => chatContent("```json\n" + payload + "\n```"));
   try {
-    const matches = await scoreCandidatesWithLlm(input, candidates(3), config(server.origin), farFuture());
-    assert.deepEqual(matches, [{ id: "c000", percent: 80, reason: "giống" }]);
+    const matches = await scoreCandidatesWithLlm(input, candidates(1), config(server.origin), farFuture());
+    assert.deepEqual(matches, [
+      { id: "c000", percent: 80, reason: "giống" },
+      { id: "khong-thuoc-batch", percent: 99, reason: "id lạ" },
+    ]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("ứng viên thiếu mục chấm điểm dùng được thì cả batch là BAD_OUTPUT, không thành 'không trùng' im lặng", async () => {
+  const good = { id: "c000", percent: 80, reason: "giống" };
+  const cases: Array<{ name: string; matches: unknown[]; scoredCount: number }> = [
+    { name: "model bỏ sót ứng viên", matches: [good], scoredCount: 1 },
+    { name: "percent là chuỗi", matches: [good, { id: "c001", percent: "85", reason: "x" }], scoredCount: 1 },
+    { name: "percent là số lẻ", matches: [good, { id: "c001", percent: 85.5, reason: "x" }], scoredCount: 1 },
+    { name: "percent ngoài 0..100", matches: [good, { id: "c001", percent: 120, reason: "x" }], scoredCount: 1 },
+    { name: "reason thiếu", matches: [good, { id: "c001", percent: 85 }], scoredCount: 1 },
+    { name: "reason chỉ có khoảng trắng", matches: [good, { id: "c001", percent: 85, reason: "  " }], scoredCount: 1 },
+    { name: "id không thuộc batch", matches: [good, { id: "c999", percent: 85, reason: "x" }], scoredCount: 1 },
+    { name: "mục trùng id không bù được ứng viên khác", matches: [good, good], scoredCount: 1 },
+    { name: "mảng matches rỗng", matches: [], scoredCount: 0 },
+  ];
+  for (const { name, matches, scoredCount } of cases) {
+    const server = await startFakeServer(() => chatContent(JSON.stringify({ matches })));
+    try {
+      await assert.rejects(
+        () => scoreCandidatesWithLlm(input, candidates(2), config(server.origin), farFuture()),
+        (error: unknown) => {
+          assert.ok(error instanceof LlmScorerError, name);
+          assert.equal(error.code, "BAD_OUTPUT", name);
+          assert.deepEqual(
+            error.detail,
+            { reason: "incomplete_scores", expectedCount: 2, scoredCount },
+            name,
+          );
+          return true;
+        },
+        name,
+      );
+    } finally {
+      await server.close();
+    }
+  }
+});
+
+test("một batch thiếu mục thì cả lời gọi lỗi dù các batch khác chấm đủ", async () => {
+  const server = await startFakeServer((request) => {
+    const { candidates: batch } = userPayload(request);
+    return batch.some((c) => c.candidateId === "c003")
+      ? chatContent(JSON.stringify({ matches: [{ id: "c003", percent: 70, reason: "ok" }] })) // thiếu c002
+      : scoreAll(request);
+  });
+  try {
+    await assert.rejects(
+      () => scoreCandidatesWithLlm(input, candidates(4), config(server.origin, { batchSize: 2 }), farFuture()),
+      (error: unknown) => error instanceof LlmScorerError && error.code === "BAD_OUTPUT",
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("percent biên 0 và 100 được chấp nhận là mục dùng được", async () => {
+  const server = await startFakeServer(() =>
+    chatContent(
+      JSON.stringify({
+        matches: [
+          { id: "c000", percent: 0, reason: "không liên quan" },
+          { id: "c001", percent: 100, reason: "giống hệt" },
+        ],
+      }),
+    ),
+  );
+  try {
+    const matches = await scoreCandidatesWithLlm(input, candidates(2), config(server.origin), farFuture());
+    assert.deepEqual(matches.map((m) => m.percent), [0, 100]);
   } finally {
     await server.close();
   }
@@ -382,7 +497,7 @@ test("loadLlmScorerConfig: mặc định, bỏ dấu / cuối base URL, giá tr�
   assert.equal(defaults.baseUrl, "https://openrouter.ai/api/v1");
   assert.equal(defaults.apiKey, "");
   assert.equal(defaults.model, "");
-  assert.equal(defaults.timeoutMs, 10000);
+  assert.equal(defaults.timeoutMs, 25000);
   assert.equal(defaults.batchSize, 5);
   assert.equal(defaults.concurrency, 20);
   assert.equal(defaults.maxCandidateChars, 4000);
@@ -409,7 +524,7 @@ test("loadLlmScorerConfig: mặc định, bỏ dấu / cuối base URL, giá tr�
     LLM_SCORER_CONCURRENCY: "abc",
     LLM_SCORER_MAX_CANDIDATE_CHARS: "1.5",
   });
-  assert.equal(bad.timeoutMs, 10000);
+  assert.equal(bad.timeoutMs, 25000);
   assert.equal(bad.batchSize, 5);
   assert.equal(bad.concurrency, 20);
   assert.equal(bad.maxCandidateChars, 4000);

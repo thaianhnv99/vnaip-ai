@@ -124,10 +124,10 @@ Copy `.env.example` thành `.env` và chỉnh các biến. Tiến trình **web**
 | --- | --- |
 | `CHECK_DUPLICATES_ALLOWED_SUBS`, `_OIDS`, `_WIDS` | Danh sách claim được phép gọi tool (phân tách bằng dấu phẩy, AND giữa các danh sách). Không đặt danh sách nào thì 403 cho tất cả. |
 | `CHECK_DUPLICATES_CANDIDATE_LIMIT` | Trần số sáng kiến gửi cho model (mặc định 100, tối đa 500). |
-| `CHECK_DUPLICATES_DEADLINE_MS` | Tổng thời gian cho cả lời gọi (mặc định 13000, nhỏ hơn `timeoutMs` 15000 của tool). |
+| `CHECK_DUPLICATES_DEADLINE_MS` | Tổng thời gian cho cả lời gọi (mặc định 28000, nhỏ hơn `timeoutMs` 30000 của tool). |
 | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL` | Khoá và base URL OpenRouter, dùng chung với embedding. |
 | `LLM_SCORER_MODEL` | Model chấm điểm. **Không có mặc định.** Chưa chốt model cho Staging/production: đã đo `claude-haiku-5.5` đạt mốc 15 giây, các model `:free` thì không (xem `docs/ke-hoach-phat-trien.md`, quyết định #15). |
-| `LLM_SCORER_BATCH_SIZE`, `LLM_SCORER_CONCURRENCY`, `LLM_SCORER_TIMEOUT_MS`, `LLM_SCORER_MAX_CANDIDATE_CHARS` | Số ứng viên mỗi lần gọi (5), số lần gọi song song (20), trần thời gian mỗi lần (10000ms), phần nội dung tối đa mỗi ứng viên (4000 ký tự). |
+| `LLM_SCORER_BATCH_SIZE`, `LLM_SCORER_CONCURRENCY`, `LLM_SCORER_TIMEOUT_MS`, `LLM_SCORER_MAX_CANDIDATE_CHARS` | Số ứng viên mỗi lần gọi (5), số lần gọi song song (20), trần thời gian mỗi lần (25000ms), phần nội dung tối đa mỗi ứng viên (4000 ký tự). |
 | `QDRANT_URL` | URL REST của Qdrant, ví dụ `http://localhost:6333` (Docker local). |
 | `QDRANT_COLLECTION_PREFIX` | Tiền tố của ba collection `<tiền tố>_ideas`, `_solutions`, `_initiatives`. Mỗi môi trường một tiền tố. Thay `QDRANT_COLLECTION`. |
 | `QDRANT_API_KEY` | Không cần với Qdrant local. Chỉ bắt buộc khi `QDRANT_URL` không phải localhost (và phải `https`). |
