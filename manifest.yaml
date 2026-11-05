@@ -1,6 +1,6 @@
 manifestSchemaVersion: 3
 appId: vnaip-dedup
-version: 1.0.1
+version: 1.0.2
 displayName: "VNAIP Dedup"
 description: "Kiểm tra hồ sơ ứng viên tương tự trong hệ thống VNAIP."
 publisher:
