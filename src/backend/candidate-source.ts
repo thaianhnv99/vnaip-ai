@@ -1,36 +1,43 @@
-import { DedupError, type Candidate, type DedupDependencies, type RecordType } from "./dedup.js";
+import { DedupError, type Candidate, type DedupDependencies } from "./dedup.js";
+import type { RecordType } from "./record-type.js";
 import {
   DEFAULT_MAX_SCROLL_POINTS,
   type StoredChunk,
-  type VectorStore,
+  type VectorStores,
 } from "./vector-store.js";
 
 /**
- * Nguồn ứng viên của luồng kiểm tra trùng (hướng A): đọc MỌI chunk trong
- * collection của môi trường rồi gom lại theo `ideaId`. Không dùng vector, nên
- * không cần embedding ở luồng này (quyết định GĐ0 #2).
+ * Nguồn ứng viên của luồng kiểm tra trùng (hướng A): đọc MỌI chunk trong collection
+ * CỦA ĐÚNG type được hỏi rồi gom lại theo `ideaId`. Collection của type khác không
+ * bao giờ được mở ra (type được tách ở tầng lưu trữ, không phải đọc hết rồi lọc).
+ * Không dùng vector, nên không cần embedding ở luồng này (quyết định GĐ0 #2).
  *
- * Mọi sáng kiến nằm chung một tập dữ liệu (không còn `datasetKey`), nên hàm này
- * không lọc theo tenant; ai được gọi tool do caller-policy.ts quyết định.
+ * Không còn `datasetKey`, nên hàm này không lọc theo tenant; ai được gọi tool do
+ * caller-policy.ts quyết định.
  */
 
 export interface CandidateSourceOptions {
   /** Số chunk tối đa đọc từ store; chạm trần thì báo lỗi, không trả dữ liệu thiếu. */
   maxPoints?: number;
-  /** Chạy trước lần đọc đầu tiên (ví dụ ensureCollection); lỗi thì lần sau thử lại. */
-  ensureReady?: () => Promise<void>;
+  /**
+   * Chạy trước lần đọc đầu tiên của MỘT type (ví dụ ensureCollection của collection
+   * type đó); lỗi thì lần sau thử lại.
+   */
+  ensureReady?: (type: RecordType) => Promise<void>;
   log?: (event: string, details: Record<string, unknown>) => void;
 }
 
 export function createQdrantCandidateFinder(
-  store: VectorStore,
+  stores: VectorStores,
   options: CandidateSourceOptions = {},
 ): DedupDependencies["findCandidates"] {
   const maxPoints = options.maxPoints ?? DEFAULT_MAX_SCROLL_POINTS;
 
   return async function findCandidates(input) {
     const startedAt = performance.now();
-    await options.ensureReady?.();
+    // Chọn collection theo type TRƯỚC mọi thao tác: type lạ thì dừng ở đây.
+    const store = stores.forType(input.type);
+    await options.ensureReady?.(input.type);
 
     const { points, truncated } = await store.scrollAll({ maxPoints });
     if (truncated) {
@@ -43,7 +50,17 @@ export function createQdrantCandidateFinder(
     }
 
     const candidates = groupChunksIntoCandidates(points, input.type);
+
+    // Collection của type này không được chứa chunk mang type khác. Nếu có thì dữ liệu
+    // đã bị ghi lệch (sửa tay, migrate sai...): bỏ qua chúng (xem groupChunksIntoCandidates)
+    // và để lại dấu vết trong log thay vì im lặng.
+    const foreign = points.filter((chunk) => chunk.payload.type !== input.type).length;
+    if (foreign > 0) {
+      options.log?.("candidates_foreign_type_ignored", { type: input.type, chunks: foreign });
+    }
+
     options.log?.("candidates_loaded", {
+      type: input.type,
       chunks: points.length,
       ideas: candidates.length,
       durationMs: Math.round(performance.now() - startedAt),
@@ -61,6 +78,10 @@ export function createQdrantCandidateFinder(
  * chunk, bỏ chunk có chỉ số >= số chunk đó (đuôi cũ chưa kịp xoá), và nếu một chỉ
  * số có nhiều bản thì lấy bản mới hơn. Không bỏ cả sáng kiến chỉ vì thiếu chunk:
  * làm vậy sẽ che mất một sáng kiến có thể trùng.
+ *
+ * `chunks` phải đến từ collection của `type`; việc tách type KHÔNG dựa vào dòng lọc
+ * bên dưới. Dòng đó chỉ là chốt chặn thứ hai: chunk mang type khác (không thể xuất
+ * hiện nếu dữ liệu được ghi qua store) không bao giờ trở thành ứng viên của `type`.
  */
 export function groupChunksIntoCandidates(
   chunks: StoredChunk[],

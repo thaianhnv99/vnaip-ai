@@ -9,8 +9,8 @@ import { assertValidDedupOutput } from "./validate-output.js";
 import { createQdrantCandidateFinder } from "./candidate-source.js";
 import { createScorerFromEnv, LlmScorerError } from "./llm-scorer.js";
 import { DEFAULT_EMBEDDING_DIMENSIONS } from "./openrouter-embeddings.js";
-import { createVectorStoreFromEnv } from "./qdrant-store.js";
-import { VectorStoreError } from "./vector-store.js";
+import { createVectorStoresFromEnv } from "./qdrant-store.js";
+import { VectorStoreError, lazyEnsureCollections } from "./vector-store.js";
 
 /**
  * Trần số sáng kiến gửi cho model (hướng A gửi tất cả). 100 sáng kiến là 20 batch
@@ -46,12 +46,15 @@ function loadDeadlineMs(env: NodeJS.ProcessEnv): number {
  * cần Qdrant (đọc) và model chấm điểm. Mock chỉ bật khi đặt =true tường minh
  * (QDRANT_MOCK_MODE, LLM_MOCK_MODE): thiếu cấu hình thì ném lỗi NOT_CONFIGURED thay
  * vì âm thầm dùng dữ liệu giả.
+ *
+ * Mỗi lời gọi chỉ đọc collection của `input.type` (ideas / solutions / initiatives);
+ * hai collection còn lại không được mở ra.
  */
 export function buildDependencies(
   env: NodeJS.ProcessEnv = process.env,
   log: ToolLogger = defaultLog,
 ): DedupDependencies {
-  const store = createVectorStoreFromEnv(env, DEFAULT_EMBEDDING_DIMENSIONS);
+  const stores = createVectorStoresFromEnv(env, DEFAULT_EMBEDDING_DIMENSIONS);
   if (env.QDRANT_MOCK_MODE === "true") {
     log("info", "check_duplicates_in_memory_store", {
       message:
@@ -59,18 +62,14 @@ export function buildDependencies(
     });
   }
 
-  // Tạo/kiểm collection ở lần đọc đầu thay vì lúc khởi động (Qdrant chậm không làm
-  // app khởi động chậm). Collection chưa có nghĩa là chưa index gì; không có bước
-  // này thì lần gọi đầu trên môi trường mới sẽ lỗi 404 thay vì trả danh sách rỗng.
-  let ready: Promise<void> | undefined;
-  const ensureReady = () =>
-    (ready ??= store.ensureCollection().catch((error) => {
-      ready = undefined;
-      throw error;
-    }));
+  // Tạo/kiểm collection của từng type ở lần đọc đầu của type đó thay vì lúc khởi động
+  // (Qdrant chậm không làm app khởi động chậm). Collection chưa có nghĩa là chưa index
+  // gì; không có bước này thì lần gọi đầu trên môi trường mới sẽ lỗi 404 thay vì trả
+  // danh sách rỗng.
+  const ensureReady = lazyEnsureCollections(stores);
 
   return {
-    findCandidates: createQdrantCandidateFinder(store, {
+    findCandidates: createQdrantCandidateFinder(stores, {
       ensureReady,
       log: (event, details) => log("info", event, details),
     }),

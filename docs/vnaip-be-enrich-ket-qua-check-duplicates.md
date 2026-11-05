@@ -13,8 +13,8 @@
 ```json
 {
   "matches": [
-    { "id": "GP-2026-0022", "type": "solution", "score": 0.83, "percent": 83, "reason": "..." },
-    { "id": "GP-2026-0051", "type": "solution", "score": 0.62, "percent": 62, "reason": "..." }
+    { "id": "GP-2026-0022", "type": "solutions", "score": 0.83, "percent": 83, "reason": "..." },
+    { "id": "GP-2026-0051", "type": "solutions", "score": 0.62, "percent": 62, "reason": "..." }
   ]
 }
 ```

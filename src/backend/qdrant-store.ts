@@ -1,68 +1,100 @@
 import {
   DEFAULT_MAX_SCROLL_POINTS,
-  InMemoryVectorStore,
   VectorStoreError,
+  VectorStoreSet,
   assertChunkRange,
   assertIdeaId,
   assertValidPoint,
+  createInMemoryVectorStores,
   type IdeaChunkPayload,
   type ScrollResult,
   type StoredChunk,
   type VectorPoint,
   type VectorStore,
+  type VectorStores,
 } from "./vector-store.js";
+import { isRecordType, type RecordType } from "./record-type.js";
 
 /**
  * Qdrant qua REST. Chỉ dùng fetch để không thêm phụ thuộc và dễ test bằng
  * server giả.
  *
- * Toàn bộ collection là một tập dữ liệu duy nhất (không còn `datasetKey`, xem
- * vector-store.ts). Mọi thao tác xoá phải có điều kiện `ideaId` (đi qua
- * `ideaFilter()`), nên không có đường xoá "cả collection" trong code. Thông báo
- * lỗi chỉ chứa mã HTTP, không chứa API key, payload hay body phản hồi.
+ * Một server Qdrant, ba collection riêng theo type (`<prefix>_ideas`,
+ * `<prefix>_solutions`, `<prefix>_initiatives`). Mỗi `QdrantVectorStore` chỉ biết
+ * đúng một collection nên không thể đọc, ghi hay xoá sang type khác. Mọi thao tác
+ * xoá phải có điều kiện `ideaId` (đi qua `ideaFilter()`), nên không có đường xoá
+ * "cả collection" trong code. Thông báo lỗi chỉ chứa mã HTTP, không chứa API key,
+ * payload hay body phản hồi.
+ *
+ * Chạy local bằng Docker (README): REST ở cổng 6333 và không cần API key. Cổng 6334
+ * là gRPC do Qdrant tự mở kèm, code này không dùng.
  */
 
+/** Cấu hình kết nối + tên collection của từng type, đọc từ biến môi trường. */
 export interface QdrantConfig {
   url: string;
-  /** Bắt buộc với host không phải localhost. */
+  /** Tuỳ chọn: Qdrant local không cần. Bắt buộc (cùng https) với host không phải localhost. */
+  apiKey: string;
+  collectionPrefix: string;
+  /** Collection riêng của từng type: `${collectionPrefix}_${type}`. */
+  collections: Readonly<Record<RecordType, string>>;
+  /** Số chiều vector của mỗi collection (phải khớp embedding model). */
+  dimensions: number;
+  timeoutMs: number;
+}
+
+/** Cấu hình của MỘT store: đúng một collection, đúng một type. */
+export interface QdrantStoreConfig {
+  url: string;
   apiKey: string;
   collection: string;
-  /** Số chiều vector của collection (phải khớp embedding model). */
+  recordType: RecordType;
   dimensions: number;
   timeoutMs: number;
 }
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
-const COLLECTION_NAME = /^[A-Za-z0-9_-]{1,255}$/;
+/** Tối đa 200 để `${prefix}_${type}` vẫn nằm trong giới hạn 255 ký tự của Qdrant. */
+const COLLECTION_PREFIX = /^[A-Za-z0-9_-]{1,200}$/;
 const PAGE_SIZE = 256;
 const UPSERT_BATCH_SIZE = 100;
 /**
- * Các trường cần payload index vì truy vấn lọc theo chúng. Qdrant Cloud từ
- * chối lọc theo trường chưa có index (HTTP 400 "Index required but not found"),
- * kể cả lọc `range` của deleteChunksFrom trên chunkIndex.
+ * Các trường cần payload index vì truy vấn lọc theo chúng. Qdrant Cloud (strict
+ * mode) từ chối lọc theo trường chưa có index (HTTP 400 "Index required but not
+ * found"), kể cả lọc `range` của deleteChunksFrom trên chunkIndex. Luôn tạo index
+ * cho mọi collection để Docker local và hosted hành xử như nhau.
  */
 const INDEXED_FIELDS: ReadonlyArray<{ field: string; schema: "keyword" | "integer" }> = [
   { field: "ideaId", schema: "keyword" },
   { field: "chunkIndex", schema: "integer" },
 ];
 
+/** Tên collection của một type: nơi DUY NHẤT ghép prefix với type. */
+export function collectionNameFor(prefix: string, type: RecordType): string {
+  return `${prefix}_${type}`;
+}
+
 export function loadQdrantConfig(
   env: NodeJS.ProcessEnv = process.env,
   dimensions: number,
 ): QdrantConfig {
   const rawUrl = (env.QDRANT_URL ?? "").trim().replace(/\/+$/, "");
-  const collection = env.QDRANT_COLLECTION ?? "";
+  const collectionPrefix = env.QDRANT_COLLECTION_PREFIX ?? "";
   const apiKey = env.QDRANT_API_KEY ?? "";
-  if (!rawUrl || !collection) {
+  if (!rawUrl || !collectionPrefix) {
+    // Môi trường cũ còn biến một-collection: nói rõ để khỏi mất công dò.
+    const legacy = (env.QDRANT_COLLECTION ?? "").trim().length > 0;
     throw new VectorStoreError(
       "NOT_CONFIGURED",
-      "Qdrant chưa được cấu hình (thiếu QDRANT_URL hoặc QDRANT_COLLECTION)",
+      legacy && rawUrl
+        ? "Thiếu QDRANT_COLLECTION_PREFIX (QDRANT_COLLECTION đã bị thay bằng QDRANT_COLLECTION_PREFIX: mỗi type một collection, xem .env.example)"
+        : "Qdrant chưa được cấu hình (thiếu QDRANT_URL hoặc QDRANT_COLLECTION_PREFIX)",
     );
   }
-  if (!COLLECTION_NAME.test(collection)) {
+  if (!COLLECTION_PREFIX.test(collectionPrefix)) {
     throw new VectorStoreError(
       "NOT_CONFIGURED",
-      "QDRANT_COLLECTION chỉ gồm chữ, số, dấu gạch ngang và gạch dưới",
+      "QDRANT_COLLECTION_PREFIX chỉ gồm chữ, số, dấu gạch ngang và gạch dưới (tối đa 200 ký tự)",
     );
   }
 
@@ -92,41 +124,63 @@ export function loadQdrantConfig(
   return {
     url: rawUrl,
     apiKey,
-    collection,
+    collectionPrefix,
+    collections: {
+      ideas: collectionNameFor(collectionPrefix, "ideas"),
+      solutions: collectionNameFor(collectionPrefix, "solutions"),
+      initiatives: collectionNameFor(collectionPrefix, "initiatives"),
+    },
     dimensions,
     timeoutMs: Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 10000,
   };
 }
 
 /**
- * Kho trong bộ nhớ dùng chung trong một tiến trình (theo số chiều) cho
+ * Bộ ba kho trong bộ nhớ dùng chung trong một tiến trình (theo số chiều) cho
  * QDRANT_MOCK_MODE: khi web chạy worker ngay trong tiến trình (QUEUE_MOCK_MODE=true),
  * sáng kiến được index qua webhook phải hiện ra ở tool check-duplicates. Nếu mỗi nơi
  * tự tạo một kho riêng thì tool luôn thấy kho rỗng và trả "không trùng" cho mọi thứ.
+ * Vẫn là ba kho riêng theo type, giống mô hình 3 collection.
  */
-const sharedMockStores = new Map<number, InMemoryVectorStore>();
+const sharedMockStores = new Map<number, VectorStoreSet>();
 
-function sharedMockStore(dimensions: number): InMemoryVectorStore {
-  let store = sharedMockStores.get(dimensions);
-  if (!store) {
-    store = new InMemoryVectorStore(dimensions);
-    sharedMockStores.set(dimensions, store);
+function sharedMockStoreSet(dimensions: number): VectorStoreSet {
+  let stores = sharedMockStores.get(dimensions);
+  if (!stores) {
+    stores = createInMemoryVectorStores(dimensions);
+    sharedMockStores.set(dimensions, stores);
   }
-  return store;
+  return stores;
 }
 
 /**
  * QDRANT_MOCK_MODE=true dùng store trong bộ nhớ (chung trong tiến trình, xem
- * sharedMockStore; không chia sẻ được giữa web và worker chạy tiến trình riêng).
+ * sharedMockStoreSet; không chia sẻ được giữa web và worker chạy tiến trình riêng).
  * Biến không đặt nghĩa là dùng Qdrant thật (và báo NOT_CONFIGURED nếu thiếu cấu hình).
  */
-export function createVectorStoreFromEnv(
+export function createVectorStoresFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   dimensions: number,
-): VectorStore {
-  return env.QDRANT_MOCK_MODE === "true"
-    ? sharedMockStore(dimensions)
-    : new QdrantVectorStore(loadQdrantConfig(env, dimensions));
+): VectorStores {
+  if (env.QDRANT_MOCK_MODE === "true") return sharedMockStoreSet(dimensions);
+
+  const config = loadQdrantConfig(env, dimensions);
+  const storeFor = (recordType: RecordType): VectorStore =>
+    new QdrantVectorStore({
+      url: config.url,
+      apiKey: config.apiKey,
+      collection: config.collections[recordType],
+      recordType,
+      dimensions: config.dimensions,
+      timeoutMs: config.timeoutMs,
+    });
+  // Literal tường minh (không dựng từ RECORD_TYPES): thêm một type mà quên ở đây thì
+  // không biên dịch được, thay vì chạy với thiếu collection.
+  return new VectorStoreSet({
+    ideas: storeFor("ideas"),
+    solutions: storeFor("solutions"),
+    initiatives: storeFor("initiatives"),
+  });
 }
 
 type Condition =
@@ -141,10 +195,12 @@ function ideaFilter(ideaId: string, extra: Condition[] = []) {
 }
 
 export class QdrantVectorStore implements VectorStore {
-  private readonly config: QdrantConfig;
+  readonly recordType: RecordType;
+  private readonly config: QdrantStoreConfig;
 
-  constructor(config: QdrantConfig) {
+  constructor(config: QdrantStoreConfig) {
     this.config = config;
+    this.recordType = config.recordType;
   }
 
   async ensureCollection(): Promise<void> {
@@ -170,7 +226,7 @@ export class QdrantVectorStore implements VectorStore {
   }
 
   async upsertChunks(points: VectorPoint[]): Promise<void> {
-    for (const point of points) assertValidPoint(point, this.config.dimensions);
+    for (const point of points) assertValidPoint(point, this.config.dimensions, this.recordType);
     for (let start = 0; start < points.length; start += UPSERT_BATCH_SIZE) {
       const batch = points.slice(start, start + UPSERT_BATCH_SIZE);
       await this.request("PUT", `${this.collectionPath()}/points?wait=true`, {
@@ -247,7 +303,7 @@ export class QdrantVectorStore implements VectorStore {
     ) {
       throw new VectorStoreError(
         "COLLECTION_MISMATCH",
-        `Collection hiện có không khớp cấu hình (cần vector đơn ${this.config.dimensions} chiều, cosine). Đổi embedding model thì phải dùng collection mới và reindex`,
+        `Collection "${this.config.collection}" hiện có không khớp cấu hình (cần vector đơn ${this.config.dimensions} chiều, cosine). Đổi embedding model thì phải dùng QDRANT_COLLECTION_PREFIX mới và reindex`,
       );
     }
   }
@@ -318,7 +374,7 @@ function parseScrollPage(result: unknown): { points: StoredChunk[]; nextOffset: 
 function toPayload(raw: Record<string, unknown>): IdeaChunkPayload {
   if (
     typeof raw.ideaId !== "string" ||
-    typeof raw.type !== "string" ||
+    !isRecordType(raw.type) ||
     typeof raw.title !== "string" ||
     typeof raw.content !== "string" ||
     !Number.isInteger(raw.chunkIndex) ||

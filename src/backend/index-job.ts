@@ -1,6 +1,7 @@
 import { chunkText, DEFAULT_CHUNK_CHARS } from "./chunker.js";
 import type { Embedder } from "./openrouter-embeddings.js";
-import { pointId, type VectorPoint, type VectorStore } from "./vector-store.js";
+import { pointId, type VectorPoint, type VectorStores } from "./vector-store.js";
+import type { RecordType } from "./record-type.js";
 import type { JobHandler, JobOutcome, RetryPolicy } from "./job-queue.js";
 import { decideOutcome } from "./job-queue.js";
 
@@ -8,11 +9,15 @@ import { decideOutcome } from "./job-queue.js";
  * Job index một sáng kiến. Job mang đủ thông tin để worker làm việc mà không
  * cần hỏi lại BE (id, type, title, content, metadata, fileRef); vì chứa nội dung
  * sáng kiến nên Redis phải nằm trong mạng tin cậy hoặc dùng TLS.
+ *
+ * `type` quyết định collection mà sáng kiến được ghi vào. Webhook đã chặn type không
+ * hợp lệ trước khi enqueue, nhưng worker vẫn kiểm lại (xem processIndexJob) vì job
+ * đọc từ Redis có thể là job cũ từ trước khi có các type này.
  */
 export interface IndexJob {
   jobId: string;
   ideaId: string;
-  type: string;
+  type: RecordType;
   title: string;
   content: string;
   metadata: Record<string, unknown>;
@@ -36,14 +41,18 @@ export class IndexJobError extends Error {
 
 export interface IndexDependencies {
   embed: Embedder;
-  store: VectorStore;
+  /** Ba store, mỗi type một collection; job được ghi vào store của `job.type`. */
+  stores: VectorStores;
   /** Tên model, ghi vào payload để biết khi nào cần reindex. */
   embeddingModel: string;
   chunkChars?: number;
   maxChunks?: number;
   now?: () => Date;
-  /** Chạy trước job đầu tiên (ví dụ tạo collection); lỗi thì job được retry. */
-  ensureReady?: () => Promise<void>;
+  /**
+   * Chạy trước khi ghi một job (ví dụ tạo collection của type đó); lỗi thì job được
+   * retry. Nhận type để chỉ tạo/kiểm đúng collection sắp ghi.
+   */
+  ensureReady?: (type: RecordType) => Promise<void>;
 }
 
 export const DEFAULT_MAX_CHUNKS = 400;
@@ -52,11 +61,20 @@ export const DEFAULT_MAX_CHUNKS = 400;
  * Idempotent: chạy lại cùng job cho cùng kết quả. Thứ tự có chủ đích:
  * embed trước (dễ lỗi nhất, chưa đụng dữ liệu), upsert chunk mới, rồi mới xoá
  * chunk thừa, nên không có lúc nào sáng kiến biến mất khỏi Qdrant.
+ *
+ * Cả ghi lẫn xoá chunk thừa dùng CÙNG một store (collection của `job.type`), nên
+ * reindex một sáng kiến không bao giờ động tới collection của type khác, kể cả khi
+ * ở đó có sáng kiến trùng `ideaId`.
  */
 export async function processIndexJob(
   job: IndexJob,
   deps: IndexDependencies,
 ): Promise<{ chunks: number }> {
+  // Chọn collection TRƯỚC mọi việc khác: type không hợp lệ (ví dụ job cũ "solution" còn
+  // trong hàng đợi từ trước khi tách collection) bị loại ngay với INVALID_TYPE, không
+  // retry, và không tốn lượt embedding.
+  const store = deps.stores.forType(job.type);
+
   const chunks = chunkText(job.content, {
     maxChars: deps.chunkChars ?? DEFAULT_CHUNK_CHARS,
   });
@@ -67,7 +85,7 @@ export async function processIndexJob(
     throw new IndexJobError("Sáng kiến quá dài để index");
   }
 
-  await deps.ensureReady?.();
+  await deps.ensureReady?.(job.type);
 
   // Mỗi vector mang cả tiêu đề để chunk nào cũng giữ ngữ cảnh của sáng kiến.
   const vectors = await deps.embed(
@@ -91,8 +109,8 @@ export async function processIndexJob(
     },
   }));
 
-  await deps.store.upsertChunks(points);
-  await deps.store.deleteChunksFrom(job.ideaId, chunks.length);
+  await store.upsertChunks(points);
+  await store.deleteChunksFrom(job.ideaId, chunks.length);
   return { chunks: chunks.length };
 }
 
@@ -117,6 +135,9 @@ export function createIndexJobHandler(
     const base = {
       jobId: job.jobId,
       ideaId: job.ideaId,
+      // Type là một trong ba giá trị cố định (hoặc giá trị lạ của job cũ), không phải
+      // nội dung sáng kiến; ghi vào log để biết job đi vào collection nào.
+      type: job.type,
       attempt,
       // #TODO(MinIO): khi có MinIO, tải file theo fileRef (quyền chỉ đọc), trích
       // text, chia chunk, rồi xoá file tạm. Hiện chỉ ghi nhận là đã bỏ qua.

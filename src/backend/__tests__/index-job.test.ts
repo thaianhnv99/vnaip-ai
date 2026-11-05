@@ -8,7 +8,8 @@ import {
   type IndexJob,
 } from "../index-job.js";
 import { EmbeddingError, createMockEmbedder, type Embedder } from "../openrouter-embeddings.js";
-import { InMemoryVectorStore, pointId } from "../vector-store.js";
+import { VectorStoreError, createInMemoryVectorStores, pointId } from "../vector-store.js";
+import { RECORD_TYPES, type RecordType } from "../record-type.js";
 
 const DIMS = 16;
 const policy = { maxAttempts: 3, baseDelayMs: 10, maxDelayMs: 100 };
@@ -20,7 +21,7 @@ function makeJob(overrides: Partial<IndexJob> = {}): IndexJob {
   return {
     jobId: "job-1",
     ideaId: "GP-1",
-    type: "solution",
+    type: "solutions",
     title: "Tiêu đề sáng kiến",
     content: LONG,
     metadata: { owner: "x" },
@@ -30,16 +31,18 @@ function makeJob(overrides: Partial<IndexJob> = {}): IndexJob {
 }
 
 function makeDeps(overrides: Partial<IndexDependencies> = {}) {
-  const store = new InMemoryVectorStore(DIMS);
+  const stores = createInMemoryVectorStores(DIMS);
+  // `store` là collection của type mặc định của makeJob() ("solutions").
+  const store = stores.forType("solutions");
   const deps: IndexDependencies = {
     embed: createMockEmbedder(DIMS),
-    store,
+    stores,
     embeddingModel: "mock-embedding",
     chunkChars: 100,
     now: () => new Date("2026-11-04T01:00:00.000Z"),
     ...overrides,
   };
-  return { store, deps };
+  return { store, stores, deps };
 }
 
 test("index một sáng kiến: ghi đủ chunk với payload đúng và point ID xác định", async () => {
@@ -54,7 +57,7 @@ test("index một sáng kiến: ghi đủ chunk với payload đúng và point I
     assert.equal(point.payload.chunkIndex, index);
     assert.equal(point.payload.chunkCount, chunks);
     assert.equal(point.payload.ideaId, "GP-1");
-    assert.equal(point.payload.type, "solution");
+    assert.equal(point.payload.type, "solutions");
     assert.equal(point.payload.title, "Tiêu đề sáng kiến");
     assert.equal(point.payload.embeddingModel, "mock-embedding");
     assert.equal(point.payload.indexedAt, "2026-11-04T01:00:00.000Z");
@@ -198,5 +201,132 @@ test("handler: lỗi retryable thì retry, hết số lần hoặc không retrya
   });
 
   assert.equal(logs.every((entry) => entry.event === "index_job_failed"), true);
+  assert.equal(JSON.stringify(logs).includes("Tiêu đề sáng kiến"), false);
+});
+
+// --- Ghi / reindex / xoá theo đúng collection của type ---
+
+const countIn = async (stores: ReturnType<typeof makeDeps>["stores"], type: RecordType) =>
+  (await stores.forType(type).scrollAll()).points.length;
+
+test("job của mỗi type chỉ được ghi vào collection của type đó, hai collection còn lại không có gì", async () => {
+  for (const type of RECORD_TYPES) {
+    const { stores, deps } = makeDeps();
+    const { chunks } = await processIndexJob(makeJob({ type }), deps);
+
+    for (const other of RECORD_TYPES) {
+      const { points } = await stores.forType(other).scrollAll();
+      if (other === type) {
+        assert.equal(points.length, chunks);
+        assert.ok(points.every((point) => point.payload.type === type && point.payload.ideaId === "GP-1"));
+      } else {
+        assert.equal(points.length, 0, `job ${type} không được rò sang collection ${other}`);
+      }
+    }
+  }
+});
+
+test("cùng ideaId ở hai type là hai sáng kiến độc lập: reindex một bên không động tới bên kia", async () => {
+  const { stores, deps } = makeDeps();
+  const first = await processIndexJob(makeJob({ type: "ideas" }), deps);
+  await processIndexJob(makeJob({ type: "initiatives", content: "Bản của initiatives." }), deps);
+  assert.ok(first.chunks > 1);
+
+  // Reindex bản ideas với ít chunk hơn: chỉ dọn chunk thừa trong collection ideas.
+  await processIndexJob(makeJob({ type: "ideas", content: "Ideas chỉ còn một đoạn." }), deps);
+
+  assert.deepEqual(
+    (await stores.forType("ideas").scrollAll()).points.map((point) => point.payload.content),
+    ["Ideas chỉ còn một đoạn."],
+  );
+  assert.deepEqual(
+    (await stores.forType("initiatives").scrollAll()).points.map((point) => point.payload.content),
+    ["Bản của initiatives."],
+  );
+  assert.equal(await countIn(stores, "solutions"), 0);
+});
+
+test("reindex sau khi ít chunk hơn dọn chunk thừa ở collection của type, không đụng type khác có nhiều chunk", async () => {
+  const { stores, deps } = makeDeps();
+  const long = await processIndexJob(makeJob({ type: "solutions" }), deps);
+  await processIndexJob(makeJob({ type: "ideas" }), deps);
+  assert.ok(long.chunks > 1);
+
+  await processIndexJob(makeJob({ type: "solutions", content: "Ngắn." }), deps);
+
+  assert.equal(await countIn(stores, "solutions"), 1);
+  assert.equal(await countIn(stores, "ideas"), long.chunks, "ideas giữ nguyên toàn bộ chunk");
+});
+
+test("xoá một sáng kiến theo type chỉ xoá ở collection của type đó", async () => {
+  const { stores, deps } = makeDeps();
+  for (const type of RECORD_TYPES) await processIndexJob(makeJob({ type }), deps);
+  const before = await countIn(stores, "initiatives");
+
+  await stores.forType("ideas").deleteIdea("GP-1");
+
+  assert.equal(await countIn(stores, "ideas"), 0);
+  assert.equal(await countIn(stores, "solutions"), before);
+  assert.equal(await countIn(stores, "initiatives"), before);
+});
+
+test("type không hợp lệ bị từ chối trước mọi việc: không embedding, không tạo collection, không ghi gì, không retry", async () => {
+  for (const bogus of ["solution", "idea", "initiative", "project", "other", "Ideas", ""]) {
+    let embedCalls = 0;
+    let ensureCalls = 0;
+    const embed: Embedder = async (texts) => {
+      embedCalls += 1;
+      return createMockEmbedder(DIMS)(texts);
+    };
+    const { stores, deps } = makeDeps({
+      embed,
+      ensureReady: async () => {
+        ensureCalls += 1;
+      },
+    });
+    const job = makeJob({ type: bogus as RecordType });
+
+    await assert.rejects(
+      () => processIndexJob(job, deps),
+      (error: unknown) =>
+        error instanceof VectorStoreError && error.code === "INVALID_TYPE" && error.retryable === false,
+    );
+    assert.equal(embedCalls, 0, `type "${bogus}": không được tốn lượt embedding`);
+    assert.equal(ensureCalls, 0);
+    for (const type of RECORD_TYPES) assert.equal(await countIn(stores, type), 0);
+
+    // Qua handler: vào hàng chờ lỗi ngay, không retry (ví dụ job "solution" cũ còn trong Redis).
+    const handler = createIndexJobHandler(deps, policy, () => undefined);
+    assert.deepEqual(await handler(job, { attempt: 1 }), {
+      status: "dead",
+      reason: "non_retryable:INVALID_TYPE",
+    });
+  }
+});
+
+test("ensureReady nhận đúng type của job (chỉ tạo collection sắp ghi)", async () => {
+  const seen: RecordType[] = [];
+  const { deps } = makeDeps({
+    ensureReady: async (type) => {
+      seen.push(type);
+    },
+  });
+
+  await processIndexJob(makeJob({ type: "initiatives" }), deps);
+  await processIndexJob(makeJob({ type: "ideas", ideaId: "GP-2" }), deps);
+
+  assert.deepEqual(seen, ["initiatives", "ideas"]);
+});
+
+test("handler ghi type vào log (để biết job đi vào collection nào) nhưng không ghi nội dung", async () => {
+  const logs: Array<Record<string, unknown>> = [];
+  const { deps } = makeDeps();
+  const handler = createIndexJobHandler(deps, policy, (level, event, details) => {
+    logs.push({ level, event, ...details });
+  });
+
+  await handler(makeJob({ type: "ideas" }), { attempt: 1 });
+
+  assert.equal(logs[0]!.type, "ideas");
   assert.equal(JSON.stringify(logs).includes("Tiêu đề sáng kiến"), false);
 });

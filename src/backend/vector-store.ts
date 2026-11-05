@@ -1,22 +1,31 @@
 import { createHash } from "node:crypto";
+import { RECORD_TYPES, RECORD_TYPES_LABEL, isRecordType, type RecordType } from "./record-type.js";
 
 /**
  * Hợp đồng lưu trữ vector.
  *
- * Quyết định 2026-11-04: bỏ `datasetKey`. Toàn bộ sáng kiến của VNAIP nằm trong
- * MỘT tập dữ liệu duy nhất của collection; app không tách dữ liệu theo workspace
- * hay tenant nữa. Hệ quả cần nhớ:
- * - Không còn filter cách ly ở tầng lưu trữ. Ai gọi được tool `check-duplicates`
- *   thì thấy được mọi sáng kiến, nên việc giới hạn người gọi phải làm ở tầng tool
- *   (kiểm claim đã xác thực của Core), không phải ở đây.
- * - Mỗi môi trường dùng một collection riêng (QDRANT_COLLECTION).
- * - `ideaId` phải là duy nhất trong toàn VNAIP, vì nó là khoá định danh một
- *   sáng kiến: gửi lại cùng `ideaId` nghĩa là cập nhật chính sáng kiến đó.
- * - Point ID suy ra từ (ideaId, chunkIndex) nên retry không tạo trùng.
+ * Mô hình dữ liệu: MỘT collection cho MỖI type (ideas / solutions / initiatives,
+ * xem record-type.ts) trên cùng một server Qdrant. Mỗi `VectorStore` gắn với đúng
+ * một collection nên không có thao tác nào của nó chạm sang type khác; chọn store
+ * theo type là việc của `VectorStores.forType()`. Hệ quả cần nhớ:
+ * - Tách ở tầng lưu trữ, không phải lọc sau khi đọc: kiểm tra trùng của một type
+ *   chỉ đọc collection của type đó, nên không thể thấy hay so khớp type khác.
+ * - Từ 2026-11-04 không còn `datasetKey`: app không tách dữ liệu theo workspace hay
+ *   tenant. Ai gọi được tool `check-duplicates` thì thấy mọi sáng kiến của type
+ *   được hỏi, nên việc giới hạn người gọi làm ở tầng tool (kiểm claim đã xác thực
+ *   của Core), không phải ở đây.
+ * - Mỗi môi trường dùng một tiền tố collection riêng (QDRANT_COLLECTION_PREFIX).
+ * - `ideaId` là khoá định danh một sáng kiến và phải duy nhất trong toàn VNAIP: gửi
+ *   lại cùng `ideaId` CÙNG type nghĩa là cập nhật chính sáng kiến đó. Hệ quả của
+ *   việc tách collection: gửi lại cùng `ideaId` với type KHÁC sẽ tạo bản thứ hai ở
+ *   collection của type mới và KHÔNG xoá bản cũ ở collection của type cũ.
+ * - Point ID suy ra từ (ideaId, chunkIndex) nên retry không tạo trùng. Hai
+ *   collection độc lập nhau nên cùng point ID ở hai collection là hai point khác nhau.
  */
 
 export type VectorStoreErrorCode =
   | "NOT_CONFIGURED"
+  | "INVALID_TYPE"
   | "INVALID_POINT"
   | "COLLECTION_MISMATCH"
   | "AUTH_ERROR"
@@ -53,7 +62,8 @@ export const DEFAULT_MAX_SCROLL_POINTS = 10000;
 /** Payload của mỗi chunk. */
 export interface IdeaChunkPayload {
   ideaId: string;
-  type: string;
+  /** Luôn bằng type của collection chứa point này (store từ chối ghi lệch). */
+  type: RecordType;
   title: string;
   chunkIndex: number;
   chunkCount: number;
@@ -81,12 +91,18 @@ export interface ScrollResult {
   truncated: boolean;
 }
 
+/** Một store = đúng MỘT collection = đúng MỘT type. Mọi thao tác chỉ chạm collection đó. */
 export interface VectorStore {
+  /** Type của collection mà store này đọc và ghi. */
+  readonly recordType: RecordType;
   /** Tạo collection và payload index nếu chưa có; báo lỗi nếu cấu hình lệch. */
   ensureCollection(): Promise<void>;
-  /** Idempotent: cùng (ideaId, chunkIndex) thì ghi đè đúng point đó. */
+  /**
+   * Idempotent: cùng (ideaId, chunkIndex) thì ghi đè đúng point đó. Từ chối
+   * (INVALID_POINT) point có `payload.type` khác `recordType` của store.
+   */
   upsertChunks(points: VectorPoint[]): Promise<void>;
-  /** Hướng A: lấy mọi chunk trong collection (không có vector). */
+  /** Hướng A: lấy mọi chunk trong collection của type này (không có vector). */
   scrollAll(options?: { maxPoints?: number }): Promise<ScrollResult>;
   deleteIdea(ideaId: string): Promise<void>;
   /**
@@ -94,6 +110,64 @@ export interface VectorStore {
    * index lại một idea với ít chunk hơn lần trước, để không còn chunk thừa.
    */
   deleteChunksFrom(ideaId: string, fromChunkIndex: number): Promise<void>;
+}
+
+/** Chọn store theo type. Mọi đường ghi/đọc/xoá phải đi qua đây để vào đúng collection. */
+export interface VectorStores {
+  /**
+   * Store của đúng collection cho `type`. Ném VectorStoreError(INVALID_TYPE, không
+   * retry) nếu `type` không phải một trong RECORD_TYPES, trước khi làm bất cứ việc
+   * gì khác. Nhận `string` vì type của job đọc từ hàng đợi chỉ là dữ liệu đã
+   * serialize, không được tin theo kiểu của TypeScript.
+   */
+  forType(type: string): VectorStore;
+}
+
+export class VectorStoreSet implements VectorStores {
+  private readonly stores: Readonly<Record<RecordType, VectorStore>>;
+
+  constructor(stores: Readonly<Record<RecordType, VectorStore>>) {
+    for (const type of RECORD_TYPES) {
+      if (stores[type]?.recordType !== type) {
+        // Lỗi lắp ráp của chính app, không phải dữ liệu: store gắn nhầm type sẽ ghi
+        // sai collection một cách im lặng nên không được để chạy tiếp.
+        throw new VectorStoreError(
+          "NOT_CONFIGURED",
+          `Store của type "${type}" bị thiếu hoặc gắn nhầm type`,
+        );
+      }
+    }
+    this.stores = stores;
+  }
+
+  forType(type: string): VectorStore {
+    if (!isRecordType(type)) {
+      throw new VectorStoreError("INVALID_TYPE", `type phải là một trong: ${RECORD_TYPES_LABEL}`);
+    }
+    return this.stores[type];
+  }
+}
+
+/**
+ * Bọc ensureCollection để mỗi type chỉ tạo/kiểm collection một lần (ở lần dùng đầu
+ * tiên của type đó); lỗi thì lần sau thử lại. Qdrant chậm hay lỗi không làm tiến
+ * trình khởi động chậm, và collection của type chưa có dữ liệu vẫn được tạo để lần
+ * đọc đầu trả danh sách rỗng thay vì lỗi 404.
+ */
+export function lazyEnsureCollections(stores: VectorStores): (type: string) => Promise<void> {
+  const ready = new Map<RecordType, Promise<void>>();
+  return (type) => {
+    const store = stores.forType(type);
+    let pending = ready.get(store.recordType);
+    if (!pending) {
+      pending = store.ensureCollection().catch((error) => {
+        ready.delete(store.recordType);
+        throw error;
+      });
+      ready.set(store.recordType, pending);
+    }
+    return pending;
+  };
 }
 
 // Namespace cố định cho UUID v5 của app này. Đổi giá trị này sẽ đổi mọi point ID.
@@ -124,12 +198,21 @@ export function pointId(ideaId: string, chunkIndex: number): string {
   ].join("-");
 }
 
-/** Kiểm point trước khi ghi; dùng chung cho mọi implementation. */
-export function assertValidPoint(point: VectorPoint, dimensions: number): void {
+/**
+ * Kiểm point trước khi ghi; dùng chung cho mọi implementation. `recordType` là type
+ * của collection định ghi vào: point mang type khác bị từ chối, nên không thể ghi
+ * nhầm collection kể cả khi caller chọn sai store.
+ */
+export function assertValidPoint(
+  point: VectorPoint,
+  dimensions: number,
+  recordType: RecordType,
+): void {
   const { payload } = point;
   const valid =
     typeof payload === "object" &&
     payload !== null &&
+    payload.type === recordType &&
     typeof payload.ideaId === "string" &&
     payload.ideaId.length > 0 &&
     Number.isInteger(payload.chunkIndex) &&
@@ -144,24 +227,26 @@ export function assertValidPoint(point: VectorPoint, dimensions: number): void {
   if (!valid) {
     throw new VectorStoreError(
       "INVALID_POINT",
-      "Point không hợp lệ: thiếu ideaId hoặc chunk sai, sai số chiều vector, hoặc id không khớp pointId()",
+      "Point không hợp lệ: type không khớp collection, thiếu ideaId hoặc chunk sai, sai số chiều vector, hoặc id không khớp pointId()",
     );
   }
 }
 
-/** Store trong bộ nhớ cho test, seed và QDRANT_MOCK_MODE. Không bền vững. */
+/** Store trong bộ nhớ cho test và QDRANT_MOCK_MODE: một đối tượng = một "collection" = một type. */
 export class InMemoryVectorStore implements VectorStore {
+  readonly recordType: RecordType;
   private readonly points = new Map<string, VectorPoint>();
   private readonly dimensions: number;
 
-  constructor(dimensions: number) {
+  constructor(dimensions: number, recordType: RecordType) {
     this.dimensions = dimensions;
+    this.recordType = recordType;
   }
 
   async ensureCollection(): Promise<void> {}
 
   async upsertChunks(points: VectorPoint[]): Promise<void> {
-    for (const point of points) assertValidPoint(point, this.dimensions);
+    for (const point of points) assertValidPoint(point, this.dimensions, this.recordType);
     for (const point of points) {
       this.points.set(point.id, structuredClone(point));
     }
@@ -197,6 +282,15 @@ export class InMemoryVectorStore implements VectorStore {
       }
     }
   }
+}
+
+/** Bộ ba store trong bộ nhớ, mỗi type một store riêng, giống mô hình 3 collection của Qdrant. */
+export function createInMemoryVectorStores(dimensions: number): VectorStoreSet {
+  return new VectorStoreSet({
+    ideas: new InMemoryVectorStore(dimensions, "ideas"),
+    solutions: new InMemoryVectorStore(dimensions, "solutions"),
+    initiatives: new InMemoryVectorStore(dimensions, "initiatives"),
+  });
 }
 
 /** Kiểm ideaId của thao tác xoá; dùng chung cho mọi implementation. */

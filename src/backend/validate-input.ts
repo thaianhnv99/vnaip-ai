@@ -1,4 +1,5 @@
 import type { DedupInput } from './dedup.js';
+import { isRecordType, RECORD_TYPES_LABEL } from './record-type.js';
 
 /** Giữ khớp với maxItems của excludeIds trong dedup-input.schema.json. */
 const MAX_EXCLUDE_IDS = 100;
@@ -37,8 +38,9 @@ function collectInputErrors(input: unknown): string[] {
     errors.push(`additionalProperties không hợp lệ: ${unknownKeys.join(', ')}`);
   }
 
-  if (input.type !== 'solution') {
-    errors.push('type phải là "solution"');
+  // Giữ khớp với enum của `type` trong dedup-input.schema.json (nguồn: record-type.ts).
+  if (!isRecordType(input.type)) {
+    errors.push(`type phải là một trong: ${RECORD_TYPES_LABEL}`);
   }
 
   if (!isBoundedString(input.title, 1, 300)) {

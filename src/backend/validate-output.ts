@@ -1,4 +1,5 @@
 import type { DedupOutput } from './dedup.js';
+import { isRecordType, RECORD_TYPES_LABEL } from './record-type.js';
 
 /**
  * Validate thủ công output theo đúng dedup-output.schema.json trước khi trả
@@ -61,8 +62,9 @@ function collectMatchErrors(match: unknown, index: number): string[] {
     errors.push(`${prefix} additionalProperties không hợp lệ: ${unknownKeys.join(', ')}`);
   }
 
-  if (match.type !== 'solution') {
-    errors.push(`${prefix}.type phải là "solution"`);
+  // Giữ khớp với enum của `type` trong dedup-output.schema.json (nguồn: record-type.ts).
+  if (!isRecordType(match.type)) {
+    errors.push(`${prefix}.type phải là một trong: ${RECORD_TYPES_LABEL}`);
   }
 
   if (typeof match.id !== 'string' || match.id.length < 1 || match.id.length > 200) {

@@ -11,7 +11,7 @@ import {
 
 const valid = {
   id: "GP-2026-0022",
-  type: "solution",
+  type: "solutions",
   title: "Ứng dụng báo cáo sự cố",
   content: "Nội dung sáng kiến.",
 };
@@ -29,7 +29,7 @@ function rejects(body: unknown, messagePart: string) {
 test("event hợp lệ tối thiểu được parse, metadata mặc định là {}", () => {
   assert.deepEqual(parseIndexEvent(valid), {
     ideaId: "GP-2026-0022",
-    type: "solution",
+    type: "solutions",
     title: "Ứng dụng báo cáo sự cố",
     content: "Nội dung sáng kiến.",
     metadata: {},
@@ -147,4 +147,47 @@ test("thông báo lỗi không lặp lại giá trị đã gửi", () => {
     () => parseIndexEvent({ ...valid, title: "GIA-TRI-NHAY-CAM".repeat(50) }),
     (error: unknown) => error instanceof IndexEventError && !error.message.includes("GIA-TRI-NHAY-CAM"),
   );
+});
+
+// --- type: chỉ ideas / solutions / initiatives ---
+
+test("cả ba type ideas / solutions / initiatives đều được nhận và giữ nguyên", () => {
+  for (const type of ["ideas", "solutions", "initiatives"]) {
+    assert.equal(parseIndexEvent({ ...valid, type }).type, type);
+  }
+});
+
+test("type ngoài ba giá trị bị từ chối, kể cả giá trị của mô hình cũ và sai hoa/thường/khoảng trắng", () => {
+  const bogus: unknown[] = [
+    "solution", "idea", "initiative", "project", "other", // số ít / schema tạm cũ
+    "Ideas", "SOLUTIONS", " ideas", "ideas ", "ideas\n", "ideas,solutions", "", "   ", // sai dạng
+    undefined, null, 1, true, ["ideas"], { type: "ideas" }, // sai kiểu
+  ];
+  for (const type of bogus) {
+    rejects({ ...valid, type }, "type");
+    assert.throws(
+      () => parseIndexEvent({ ...valid, type }),
+      (error: unknown) => error instanceof IndexEventError && error.message.includes("ideas, solutions, initiatives"),
+      `type ${JSON.stringify(type)}`,
+    );
+  }
+});
+
+test("thông báo lỗi type nêu giá trị hợp lệ nhưng không lặp lại giá trị đã gửi", () => {
+  assert.throws(
+    () => parseIndexEvent({ ...valid, type: "GIA-TRI-NHAY-CAM" }),
+    (error: unknown) => error instanceof IndexEventError && !error.message.includes("GIA-TRI-NHAY-CAM"),
+  );
+});
+
+test("parseIndexEvents: một phần tử sai type thì cả mảng bị từ chối, kèm chỉ số", () => {
+  rejectsBatch([valid, { ...valid, type: "solution" }], "[1]");
+  rejectsBatch([valid, { ...valid, type: "solution" }], "type");
+  rejectsBatch([{ ...valid, type: undefined }, valid], "[0]");
+  const mixed = parseIndexEvents([
+    { ...valid, id: "A", type: "ideas" },
+    { ...valid, id: "B", type: "solutions" },
+    { ...valid, id: "C", type: "initiatives" },
+  ]);
+  assert.deepEqual(mixed.events.map((event) => event.type), ["ideas", "solutions", "initiatives"]);
 });

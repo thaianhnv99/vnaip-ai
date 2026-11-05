@@ -1,9 +1,10 @@
+import { isRecordType, RECORD_TYPES_LABEL, type RecordType } from "./record-type.js";
+
 /**
- * UNRESOLVED: "solution" là type duy nhất đã xác nhận trong schema hiện tại.
- * Mở rộng union này cùng lúc với inputSchema/outputSchema khi nghiệp vụ xác
- * nhận thêm type khác.
+ * Ba type hợp lệ là ideas / solutions / initiatives (record-type.ts). Giữ export
+ * lại ở đây để các chỗ đã import từ dedup.ts không phải đổi.
  */
-export type RecordType = "solution";
+export type { RecordType };
 
 export interface DedupInput {
   type: RecordType;
@@ -81,14 +82,16 @@ export interface ScoreOptions {
 /**
  * Các kết nối bên ngoài được truyền vào để dễ thay thế và kiểm thử.
  *
- * Không có tham số tenant: từ 2026-11-04 mọi sáng kiến nằm chung một tập dữ liệu
- * (không còn `datasetKey`), nên việc giới hạn ai được gọi tool nằm ở tầng route
- * (caller-policy.ts, dựa trên claims đã xác thực), không phải ở đây.
+ * Không có tham số tenant: từ 2026-11-04 không còn `datasetKey`, nên việc giới hạn
+ * ai được gọi tool nằm ở tầng route (caller-policy.ts, dựa trên claims đã xác
+ * thực), không phải ở đây. Dữ liệu được tách theo `type`: mỗi type một collection.
  */
 export interface DedupDependencies {
   /**
-   * Trả MỌI sáng kiến cùng `type` (hướng A, không tìm theo vector). Phải ném lỗi
-   * khi không đọc được hết dữ liệu; không bao giờ trả danh sách bị cắt như thể đầy đủ.
+   * Trả MỌI sáng kiến của ĐÚNG `input.type` (hướng A, không tìm theo vector), đọc
+   * từ collection riêng của type đó. Không được đọc collection của type khác rồi
+   * lọc lại. Phải ném lỗi khi không đọc được hết dữ liệu; không bao giờ trả danh
+   * sách bị cắt như thể đầy đủ.
    */
   findCandidates(input: DedupInput): Promise<Candidate[]>;
 
@@ -116,8 +119,11 @@ export async function checkDuplicates(
   deps: DedupDependencies,
   options: CheckDuplicatesOptions,
 ): Promise<DedupOutput> {
-  if (!input.type || !input.title?.trim() || !input.content?.trim()) {
+  if (!input.title?.trim() || !input.content?.trim()) {
     throw new DedupError("INVALID_INPUT", "type, title và content là bắt buộc");
+  }
+  if (!isRecordType(input.type)) {
+    throw new DedupError("INVALID_INPUT", `type phải là một trong: ${RECORD_TYPES_LABEL}`);
   }
 
   const deadlineAt = Date.now() + options.deadlineMs;
@@ -133,6 +139,17 @@ export async function checkDuplicates(
       "CANDIDATES_UNAVAILABLE",
       "Không lấy được danh sách sáng kiến để so sánh",
       { cause: error },
+    );
+  }
+
+  // Chốt chặn cuối cùng của việc tách theo type. Adapter đã phải đọc đúng collection
+  // của type này; nếu vẫn lọt ứng viên khác type thì đó là lỗi của adapter. Fail
+  // closed: không so sánh chéo type, và không lặng lẽ bỏ ứng viên đi rồi trả kết
+  // quả như thể đủ dữ liệu.
+  if (found.some((candidate) => candidate.type !== input.type)) {
+    throw new DedupError(
+      "CANDIDATES_UNAVAILABLE",
+      "Nguồn ứng viên trả sáng kiến khác type với yêu cầu",
     );
   }
 

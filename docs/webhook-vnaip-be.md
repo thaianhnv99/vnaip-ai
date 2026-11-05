@@ -16,9 +16,9 @@ Khi một sáng kiến được duyệt (hoặc được cập nhật), VNAIP-BE
 POST /webhooks/idea-approved
 Content-Type: application/json
 X-Webhook-Timestamp: 1730000000
-X-Webhook-Signature: sha256=bd5e9977e83e7fe106ee5e8787553a8f6620f99847f1fd15d489944b10dd8b50
+X-Webhook-Signature: sha256=cc535c95d5a952d060256b76fb646dfb7e866fdf85a92b37650f960053861589
 
-{"id":"GP-1","type":"solution","title":"Tiêu đề","content":"Nội dung"}
+{"id":"GP-1","type":"solutions","title":"Tiêu đề","content":"Nội dung"}
 ```
 
 Body tối đa 1MB. Trường lạ (kể cả `datasetKey` cũ) bị bỏ qua.
@@ -28,7 +28,7 @@ Body là **một event (object)** hoặc **một mảng event** (xem mục 2.1).
 | Trường | Yêu cầu |
 |---|---|
 | `id` | Bắt buộc. Chuỗi không rỗng, tối đa 200 ký tự, **duy nhất trong toàn VNAIP**. Gửi lại cùng `id` là cập nhật sáng kiến đó, không tạo bản mới |
-| `type` | Bắt buộc. Chuỗi không rỗng, tối đa 50 ký tự |
+| `type` | Bắt buộc. **Đúng một trong ba giá trị `ideas`, `solutions`, `initiatives`** (khớp từng ký tự, phân biệt hoa/thường, số nhiều; `solution`, `idea`, `Ideas`... đều bị từ chối). Mỗi type được lưu và so sánh trùng ở một collection riêng, nên các type không bao giờ lẫn nhau. Giữ `type` của một sáng kiến cố định: gửi lại cùng `id` với `type` khác tạo bản thứ hai ở type mới, **không** xoá bản ở type cũ |
 | `title` | Bắt buộc. Chuỗi không rỗng, tối đa 300 ký tự |
 | `content` | Bắt buộc. Chuỗi không rỗng, tối đa 200.000 ký tự |
 | `metadata` | Tuỳ chọn. Object, tối đa 10.000 byte khi serialize |
@@ -45,8 +45,8 @@ X-Webhook-Timestamp: 1730000000
 X-Webhook-Signature: sha256=<chữ ký của đúng chuỗi body này>
 
 [
-  {"id":"GP-1","type":"solution","title":"Tiêu đề 1","content":"Nội dung 1"},
-  {"id":"GP-2","type":"solution","title":"Tiêu đề 2","content":"Nội dung 2"}
+  {"id":"GP-1","type":"solutions","title":"Tiêu đề 1","content":"Nội dung 1"},
+  {"id":"GP-2","type":"solutions","title":"Tiêu đề 2","content":"Nội dung 2"}
 ]
 ```
 
@@ -77,8 +77,8 @@ Dùng để tự kiểm tra code ký trước khi gọi thật (secret dưới �
 ```
 secret    = example-secret-0123456789
 timestamp = 1730000000
-rawBody   = {"id":"GP-1","type":"solution","title":"Tiêu đề","content":"Nội dung"}
-signature = bd5e9977e83e7fe106ee5e8787553a8f6620f99847f1fd15d489944b10dd8b50
+rawBody   = {"id":"GP-1","type":"solutions","title":"Tiêu đề","content":"Nội dung"}
+signature = cc535c95d5a952d060256b76fb646dfb7e866fdf85a92b37650f960053861589
 ```
 
 Giá trị này đã được kiểm tra bằng OpenSSL, Node.js, Python và Java. Nếu BE tính ra giá trị khác thì lỗi nằm ở cách serialize hoặc encoding, không phải ở server.
@@ -102,7 +102,7 @@ Mọi response đều là JSON.
 | `202` | (không có), body `{"status":"accepted","jobId":"..."}` | Đã nhận object đơn, sẽ index nền | Xong. `jobId` chỉ để đối chiếu log |
 | `202` | (không có), body `{"status":"accepted","count":2,"jobs":[{"id":"GP-1","jobId":"..."},{"id":"GP-2","jobId":"..."}]}` | Đã nhận cả mảng, sẽ index nền. `jobs` cùng thứ tự với mảng đã gửi | Xong. `jobId` chỉ để đối chiếu log |
 | `409` | `DUPLICATE_DELIVERY` | Request (cùng chữ ký) đã được nhận trước đó | Coi như đã nhận, **không** coi là lỗi |
-| `400` | `INVALID_EVENT` | Event thiếu hoặc sai trường, hoặc mảng rỗng/quá 50 phần tử (message nêu tên trường và chỉ số phần tử nếu là mảng, không lặp lại giá trị) | Sửa dữ liệu, không retry nguyên văn. Với mảng, chưa phần tử nào được nhận |
+| `400` | `INVALID_EVENT` | Event thiếu hoặc sai trường (kể cả `type` không phải `ideas`/`solutions`/`initiatives`), hoặc mảng rỗng/quá 50 phần tử (message nêu tên trường và chỉ số phần tử nếu là mảng, không lặp lại giá trị) | Sửa dữ liệu, không retry nguyên văn. Với mảng, chưa phần tử nào được nhận |
 | `400` | `BAD_REQUEST` | Body không phải JSON hợp lệ hoặc rỗng | Sửa request |
 | `401` | `AUTH_ERROR` | Chữ ký hoặc timestamp không hợp lệ | Kiểm tra secret, cách ký, định dạng và độ lệch timestamp (mục 3) |
 | `413` | `PAYLOAD_TOO_LARGE` | Body vượt 1MB | Rút gọn nội dung |
@@ -130,7 +130,7 @@ Các ví dụ dưới đây đã được chạy thử với server thật (ở 
 SECRET='<secret>'
 URL='<URL_APP_DA_DEPLOY>/webhooks/idea-approved'
 TS=$(date +%s)
-BODY='{"id":"GP-1","type":"solution","title":"Tiêu đề","content":"Nội dung"}'
+BODY='{"id":"GP-1","type":"solutions","title":"Tiêu đề","content":"Nội dung"}'
 SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | sed 's/^.* //')
 
 curl -i -X POST "$URL" \
@@ -151,7 +151,7 @@ const secret = process.env.WEBHOOK_SECRET;
 // 1. Serialize MỘT lần; ký và gửi đúng chuỗi này.
 const body = JSON.stringify({
   id: "GP-2026-0001",
-  type: "solution",
+  type: "solutions",
   title: "Ứng dụng báo cáo sự cố",
   content: "Nội dung sáng kiến đã được duyệt...",
 });
@@ -192,7 +192,7 @@ secret = os.environ["WEBHOOK_SECRET"].encode("utf-8")
 body = json.dumps(
     {
         "id": "GP-2026-0002",
-        "type": "solution",
+        "type": "solutions",
         "title": "Ứng dụng báo cáo sự cố",
         "content": "Nội dung sáng kiến đã được duyệt...",
     },
@@ -244,7 +244,7 @@ public class SendWebhook {
 
         // 1. Serialize MỘT lần; ký và gửi đúng chuỗi này (ở đây viết tay cho gọn,
         //    thực tế dùng Jackson/Gson rồi giữ nguyên chuỗi kết quả).
-        String body = "{\"id\":\"GP-2026-0003\",\"type\":\"solution\","
+        String body = "{\"id\":\"GP-2026-0003\",\"type\":\"solutions\","
                 + "\"title\":\"Ứng dụng báo cáo sự cố\","
                 + "\"content\":\"Nội dung sáng kiến đã được duyệt...\"}";
 

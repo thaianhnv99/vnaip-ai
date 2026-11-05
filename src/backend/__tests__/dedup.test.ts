@@ -11,13 +11,13 @@ import {
 const options = { candidateLimit: 30, deadlineMs: 5000 };
 
 const validInput = {
-  type: 'solution' as const,
+  type: 'solutions' as const,
   title: 'Giải pháp quản lý hồ sơ',
   content: 'Nội dung mô tả giải pháp quản lý hồ sơ số hóa.',
 };
 
 function candidate(id: string, overrides: Partial<Candidate> = {}): Candidate {
-  return { id, type: 'solution', title: `Candidate ${id}`, content: `Nội dung của ${id}`, ...overrides };
+  return { id, type: 'solutions', title: `Candidate ${id}`, content: `Nội dung của ${id}`, ...overrides };
 }
 
 function deps(overrides: Partial<DedupDependencies>): DedupDependencies {
@@ -49,6 +49,63 @@ test('input hợp lệ với candidate và percent hợp lệ trả về matches
   assert.equal(output.matches[0].score, 0.9);
   assert.equal(output.matches[1].percent, 40);
   assert.equal(output.matches[1].score, 0.4);
+});
+
+test('type ngoài ideas/solutions/initiatives bị từ chối INVALID_INPUT và không đụng tới nguồn ứng viên hay model', async () => {
+  let touched = 0;
+  const spy = deps({
+    findCandidates: async () => {
+      touched += 1;
+      return [];
+    },
+    scoreCandidates: async () => {
+      touched += 1;
+      return [];
+    },
+  });
+  for (const type of ['solution', 'idea', 'project', 'other', 'Ideas', '', undefined]) {
+    await assert.rejects(
+      () => checkDuplicates({ ...validInput, type: type as never }, spy, options),
+      (error: unknown) => error instanceof DedupError && error.code === 'INVALID_INPUT',
+      `type ${JSON.stringify(type)}`,
+    );
+  }
+  assert.equal(touched, 0);
+});
+
+test('kết quả mang type của chính input, với cả ba type', async () => {
+  for (const type of ['ideas', 'solutions', 'initiatives'] as const) {
+    const output = await checkDuplicates(
+      { ...validInput, type },
+      deps({
+        findCandidates: async () => [candidate('a', { type })],
+        scoreCandidates: async () => [{ id: 'a', percent: 70, reason: 'giống' }],
+      }),
+      options,
+    );
+    assert.deepEqual(output.matches.map((m) => [m.id, m.type]), [['a', type]]);
+  }
+});
+
+test('nguồn ứng viên trả sáng kiến khác type với input thì fail closed (CANDIDATES_UNAVAILABLE), không so sánh chéo type', async () => {
+  let scored = 0;
+  await assert.rejects(
+    () =>
+      checkDuplicates(
+        { ...validInput, type: 'solutions' },
+        deps({
+          // Một ứng viên đúng type lẫn với một ứng viên của collection khác.
+          findCandidates: async () => [candidate('a', { type: 'solutions' }), candidate('b', { type: 'ideas' })],
+          scoreCandidates: async () => {
+            scored += 1;
+            return [{ id: 'b', percent: 99, reason: 'khác type' }];
+          },
+        }),
+        options,
+      ),
+    (error: unknown) => error instanceof DedupError && error.code === 'CANDIDATES_UNAVAILABLE',
+  );
+  assert.equal(scored, 0, 'không được gửi ứng viên khác type cho model');
 });
 
 test('input thiếu title bị từ chối với DedupError INVALID_INPUT', async () => {
@@ -149,7 +206,7 @@ test('type trong output luôn lấy từ candidate thật của VNAIP, không ph
     options,
   );
 
-  assert.equal(output.matches[0].type, 'solution');
+  assert.equal(output.matches[0].type, 'solutions');
 });
 
 test('percent ngoài thang [0,100] bị loại', async () => {

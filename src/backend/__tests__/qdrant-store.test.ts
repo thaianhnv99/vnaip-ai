@@ -2,9 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   QdrantVectorStore,
-  createVectorStoreFromEnv,
+  collectionNameFor,
+  createVectorStoresFromEnv,
   loadQdrantConfig,
-  type QdrantConfig,
+  type QdrantStoreConfig,
 } from "../qdrant-store.js";
 import {
   InMemoryVectorStore,
@@ -12,16 +13,19 @@ import {
   pointId,
   type VectorPoint,
 } from "../vector-store.js";
+import { RECORD_TYPES, type RecordType } from "../record-type.js";
 import { startFakeServer, type FakeResponse, type RecordedRequest } from "./helpers/fake-http-server.js";
 
 const API_KEY = "qdrant-test-secret-key";
 const DIMS = 3;
 
-function configFor(origin: string, overrides: Partial<QdrantConfig> = {}): QdrantConfig {
+/** Cấu hình của MỘT store: mặc định là collection của type "solutions". */
+function configFor(origin: string, overrides: Partial<QdrantStoreConfig> = {}): QdrantStoreConfig {
   return {
     url: origin,
     apiKey: API_KEY,
     collection: "vnaip_dedup_test",
+    recordType: "solutions",
     dimensions: DIMS,
     timeoutMs: 2000,
     ...overrides,
@@ -33,13 +37,13 @@ const collectionInfo = (size: number, distance = "Cosine") => ({
   json: { result: { config: { params: { vectors: { size, distance } } } } },
 });
 
-function makePoint(ideaId = "GP-1", chunkIndex = 0): VectorPoint {
+function makePoint(ideaId = "GP-1", chunkIndex = 0, type: RecordType = "solutions"): VectorPoint {
   return {
     id: pointId(ideaId, chunkIndex),
     vector: [1, 0, 0],
     payload: {
       ideaId,
-      type: "solution",
+      type,
       title: "Tiêu đề",
       chunkIndex,
       chunkCount: 1,
@@ -307,15 +311,20 @@ test("map lỗi HTTP, timeout, mất kết nối và không lộ API key hay pay
   );
 });
 
-test("loadQdrantConfig kiểm tra URL, tên collection và API key", () => {
-  const good = { QDRANT_URL: "https://x.cloud.qdrant.io:6333/", QDRANT_API_KEY: "k", QDRANT_COLLECTION: "vnaip_dedup_stg" };
+test("loadQdrantConfig kiểm tra URL, tiền tố collection và API key", () => {
+  const good = { QDRANT_URL: "https://x.cloud.qdrant.io:6333/", QDRANT_API_KEY: "k", QDRANT_COLLECTION_PREFIX: "vnaip_dedup_stg" };
   assert.equal(loadQdrantConfig(good, DIMS).url, "https://x.cloud.qdrant.io:6333");
-  assert.equal(loadQdrantConfig({ QDRANT_URL: "http://localhost:6333", QDRANT_COLLECTION: "c" }, DIMS).apiKey, "");
+  // Qdrant local bằng Docker: http + localhost, không cần API key.
+  const local = loadQdrantConfig({ QDRANT_URL: "http://localhost:6333", QDRANT_COLLECTION_PREFIX: "c" }, DIMS);
+  assert.equal(local.apiKey, "");
+  assert.equal(loadQdrantConfig({ QDRANT_URL: "http://127.0.0.1:6333", QDRANT_COLLECTION_PREFIX: "c" }, DIMS).apiKey, "");
 
   const bad = [
     {},
-    { ...good, QDRANT_COLLECTION: "" },
-    { ...good, QDRANT_COLLECTION: "../etc" },
+    { ...good, QDRANT_COLLECTION_PREFIX: "" },
+    { ...good, QDRANT_COLLECTION_PREFIX: "../etc" },
+    { ...good, QDRANT_COLLECTION_PREFIX: "có dấu" },
+    { ...good, QDRANT_COLLECTION_PREFIX: "a".repeat(201) },
     { ...good, QDRANT_URL: "khong-phai-url" },
     { ...good, QDRANT_URL: "http://qdrant.example.com:6333" },
     { ...good, QDRANT_API_KEY: "" },
@@ -328,19 +337,154 @@ test("loadQdrantConfig kiểm tra URL, tên collection và API key", () => {
   }
 });
 
-test("QDRANT_MOCK_MODE=true trả CÙNG một kho trong tiến trình cho cùng số chiều, kho khác cho số chiều khác", async () => {
-  const a = createVectorStoreFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS);
-  const b = createVectorStoreFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS);
-  const other = createVectorStoreFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS + 1);
+test("loadQdrantConfig: mỗi type một collection tên `<prefix>_<type>`, khác nhau từng đôi một", () => {
+  const { collections } = loadQdrantConfig(
+    { QDRANT_URL: "http://localhost:6333", QDRANT_COLLECTION_PREFIX: "vnaip_dedup_dev" },
+    DIMS,
+  );
+  assert.deepEqual(collections, {
+    ideas: "vnaip_dedup_dev_ideas",
+    solutions: "vnaip_dedup_dev_solutions",
+    initiatives: "vnaip_dedup_dev_initiatives",
+  });
+  assert.equal(new Set(Object.values(collections)).size, RECORD_TYPES.length);
+  for (const type of RECORD_TYPES) assert.equal(collections[type], collectionNameFor("vnaip_dedup_dev", type));
+  // 200 ký tự prefix + "_initiatives" vẫn nằm trong giới hạn 255 của Qdrant.
+  const longest = loadQdrantConfig({ QDRANT_URL: "http://localhost:6333", QDRANT_COLLECTION_PREFIX: "a".repeat(200) }, DIMS);
+  assert.ok(Object.values(longest.collections).every((name) => name.length <= 255));
+});
+
+test("loadQdrantConfig: còn QDRANT_COLLECTION của bản một-collection thì báo rõ biến đã bị thay", () => {
+  assert.throws(
+    () => loadQdrantConfig({ QDRANT_URL: "http://localhost:6333", QDRANT_COLLECTION: "vnaip_dedup_stg" }, DIMS),
+    (error: unknown) =>
+      error instanceof VectorStoreError &&
+      error.code === "NOT_CONFIGURED" &&
+      error.message.includes("QDRANT_COLLECTION_PREFIX") &&
+      !error.message.includes("vnaip_dedup_stg"),
+  );
+  // QDRANT_COLLECTION cũ KHÔNG được dùng thay prefix, kể cả khi hợp lệ.
+  assert.throws(() => loadQdrantConfig({ QDRANT_URL: "http://localhost:6333", QDRANT_COLLECTION: "ok" }, DIMS));
+});
+
+/** Qdrant giả trả lời mọi request thành công; mỗi test tự kiểm tra các URL đã được gọi. */
+async function startOkQdrant() {
+  return startFakeServer((request): FakeResponse => {
+    if (request.url.endsWith("/points/scroll")) {
+      return { status: 200, json: { result: { points: [], next_page_offset: null } } };
+    }
+    if (request.method === "GET") return collectionInfo(DIMS);
+    return { status: 200, json: { result: { status: "completed" } } };
+  });
+}
+
+const collectionOf = (url: string) => url.split("/")[2];
+
+test("createVectorStoresFromEnv: ghi, đọc, tạo index và xoá của mỗi type chỉ gọi đúng collection của type đó", async () => {
+  for (const type of RECORD_TYPES) {
+    const server = await startOkQdrant();
+    try {
+      const stores = createVectorStoresFromEnv(
+        { QDRANT_URL: server.origin, QDRANT_COLLECTION_PREFIX: "vnaip_dedup_test" },
+        DIMS,
+      );
+      const store = stores.forType(type);
+      assert.equal(store.recordType, type);
+
+      await store.ensureCollection();
+      await store.upsertChunks([makePoint("GP-1", 0, type)]);
+      await store.scrollAll();
+      await store.deleteChunksFrom("GP-1", 1);
+      await store.deleteIdea("GP-1");
+
+      const hit = new Set(server.requests.map((request) => collectionOf(request.url)));
+      assert.deepEqual([...hit], [`vnaip_dedup_test_${type}`], `type ${type} chỉ được chạm collection của nó`);
+      assert.ok(server.requests.length >= 7, "phải thực sự gọi mạng cho cả năm thao tác");
+    } finally {
+      await server.close();
+    }
+  }
+});
+
+test("store của một type không ghi được point của type khác và không gọi mạng", async () => {
+  const server = await startOkQdrant();
+  try {
+    const stores = createVectorStoresFromEnv(
+      { QDRANT_URL: server.origin, QDRANT_COLLECTION_PREFIX: "vnaip_dedup_test" },
+      DIMS,
+    );
+    for (const storeType of RECORD_TYPES) {
+      for (const pointType of RECORD_TYPES.filter((type) => type !== storeType)) {
+        await assert.rejects(
+          () => stores.forType(storeType).upsertChunks([makePoint("GP-1", 0, pointType)]),
+          (error: unknown) => error instanceof VectorStoreError && error.code === "INVALID_POINT",
+        );
+      }
+    }
+    assert.equal(server.requests.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test("forType từ chối type lạ trước khi gọi mạng (cả type cũ \"solution\")", async () => {
+  const server = await startOkQdrant();
+  try {
+    const stores = createVectorStoresFromEnv(
+      { QDRANT_URL: server.origin, QDRANT_COLLECTION_PREFIX: "vnaip_dedup_test" },
+      DIMS,
+    );
+    for (const bogus of ["solution", "idea", "project", "other", ""]) {
+      assert.throws(
+        () => stores.forType(bogus),
+        (error: unknown) => error instanceof VectorStoreError && error.code === "INVALID_TYPE" && !error.retryable,
+      );
+    }
+    assert.equal(server.requests.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test("scrollAll từ chối point có type ngoài ideas/solutions/initiatives (kể cả \"solution\" cũ)", async () => {
+  for (const bogus of ["solution", "idea", "", 7]) {
+    const server = await startFakeServer(() => ({
+      status: 200,
+      json: { result: { points: [{ id: "p1", payload: { ...storedPayload(), type: bogus } }], next_page_offset: null } },
+    }));
+    try {
+      await assert.rejects(
+        () => new QdrantVectorStore(configFor(server.origin)).scrollAll(),
+        (error: unknown) => error instanceof VectorStoreError && error.code === "BAD_RESPONSE",
+      );
+    } finally {
+      await server.close();
+    }
+  }
+});
+
+test("QDRANT_MOCK_MODE=true trả CÙNG bộ ba kho trong tiến trình cho cùng số chiều, bộ khác cho số chiều khác", async () => {
+  const a = createVectorStoresFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS);
+  const b = createVectorStoresFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS);
+  const other = createVectorStoresFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS + 1);
 
   assert.equal(a, b, "worker inline và tool phải thấy cùng dữ liệu");
   assert.notEqual(a, other);
+  for (const type of RECORD_TYPES) {
+    assert.equal(a.forType(type), b.forType(type));
+    assert.notEqual(a.forType(type), other.forType(type));
+  }
 });
 
-test("QDRANT_MOCK_MODE=true dùng store trong bộ nhớ; không đặt thì cần cấu hình thật", () => {
-  assert.ok(createVectorStoreFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS) instanceof InMemoryVectorStore);
+test("QDRANT_MOCK_MODE=true dùng kho trong bộ nhớ, mỗi type một kho riêng; không đặt thì cần cấu hình thật", () => {
+  const stores = createVectorStoresFromEnv({ QDRANT_MOCK_MODE: "true" }, DIMS);
+  for (const type of RECORD_TYPES) {
+    assert.ok(stores.forType(type) instanceof InMemoryVectorStore);
+    assert.equal(stores.forType(type).recordType, type);
+  }
+  assert.equal(new Set(RECORD_TYPES.map((type) => stores.forType(type))).size, RECORD_TYPES.length);
   assert.throws(
-    () => createVectorStoreFromEnv({}, DIMS),
+    () => createVectorStoresFromEnv({}, DIMS),
     (error: unknown) => error instanceof VectorStoreError && error.code === "NOT_CONFIGURED",
   );
 });

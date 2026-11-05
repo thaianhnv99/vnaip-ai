@@ -5,7 +5,8 @@ import { checkDuplicates, DedupError, type DedupDependencies, type DedupInput } 
 import { processIndexJob, type IndexJob } from "../index-job.js";
 import { createLlmScorer } from "../llm-scorer.js";
 import { createMockEmbedder } from "../openrouter-embeddings.js";
-import { InMemoryVectorStore } from "../vector-store.js";
+import { createInMemoryVectorStores, type VectorStores } from "../vector-store.js";
+import { RECORD_TYPES, type RecordType } from "../record-type.js";
 import { assertValidDedupOutput } from "../validate-output.js";
 import { startFakeServer, type RecordedRequest } from "./helpers/fake-http-server.js";
 
@@ -18,7 +19,7 @@ import { startFakeServer, type RecordedRequest } from "./helpers/fake-http-serve
 const DIMS = 16;
 const options = { candidateLimit: 100, deadlineMs: 5000 };
 
-function job(ideaId: string, title: string, content: string, type = "solution"): IndexJob {
+function job(ideaId: string, title: string, content: string, type: RecordType = "solutions"): IndexJob {
   return {
     jobId: `job-${ideaId}`,
     ideaId,
@@ -30,11 +31,11 @@ function job(ideaId: string, title: string, content: string, type = "solution"):
   };
 }
 
-async function seed(store: InMemoryVectorStore, jobs: IndexJob[], chunkChars = 2000) {
+async function seed(stores: VectorStores, jobs: IndexJob[], chunkChars = 2000) {
   for (const item of jobs) {
     await processIndexJob(item, {
       embed: createMockEmbedder(DIMS),
-      store,
+      stores,
       embeddingModel: "mock-embedding",
       chunkChars,
     });
@@ -54,9 +55,9 @@ function fakeScoring(request: RecordedRequest) {
   return { status: 200, json: { choices: [{ message: { content: JSON.stringify({ matches }) } }] } };
 }
 
-function buildDeps(store: InMemoryVectorStore, origin: string): DedupDependencies {
+function buildDeps(stores: VectorStores, origin: string): DedupDependencies {
   return {
-    findCandidates: createQdrantCandidateFinder(store),
+    findCandidates: createQdrantCandidateFinder(stores),
     scoreCandidates: createLlmScorer({
       baseUrl: `${origin}/api/v1`,
       apiKey: "sk-test",
@@ -70,20 +71,20 @@ function buildDeps(store: InMemoryVectorStore, origin: string): DedupDependencie
 }
 
 const input: DedupInput = {
-  type: "solution",
+  type: "solutions",
   title: "Báo cáo sự cố mặt đất bằng điện thoại",
   content: "Nhân viên báo cáo sự cố ngay tại hiện trường.",
 };
 
 test("sáng kiến đã index được tìm thấy; output đúng schema; sắp theo điểm giảm dần", async () => {
-  const store = new InMemoryVectorStore(DIMS);
-  await seed(store, [
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, [
     job("GP-1", "Ứng dụng báo cáo sự cố mặt đất", "Báo cáo sự cố mặt đất theo thời gian thực."),
     job("GP-2", "Nền tảng dữ liệu dùng chung", "Lưu trữ và chia sẻ dữ liệu giữa các khối."),
   ]);
   const server = await startFakeServer((request) => fakeScoring(request));
   try {
-    const output = await checkDuplicates(input, buildDeps(store, server.origin), options);
+    const output = await checkDuplicates(input, buildDeps(stores, server.origin), options);
 
     assertValidDedupOutput(output);
     assert.deepEqual(
@@ -94,15 +95,15 @@ test("sáng kiến đã index được tìm thấy; output đúng schema; sắp 
       ],
     );
     assert.equal(output.matches[0]!.score, 0.88);
-    assert.equal(output.matches[0]!.type, "solution");
+    assert.equal(output.matches[0]!.type, "solutions");
   } finally {
     await server.close();
   }
 });
 
 test("excludeIds loại sáng kiến khỏi kết quả và khỏi prompt gửi model", async () => {
-  const store = new InMemoryVectorStore(DIMS);
-  await seed(store, [
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, [
     job("GP-1", "Ứng dụng báo cáo sự cố mặt đất", "Báo cáo sự cố."),
     job("GP-2", "Báo cáo sự cố bằng QR", "Quét QR để báo sự cố."),
   ]);
@@ -110,7 +111,7 @@ test("excludeIds loại sáng kiến khỏi kết quả và khỏi prompt gửi 
   try {
     const output = await checkDuplicates(
       { ...input, excludeIds: ["GP-1"] },
-      buildDeps(store, server.origin),
+      buildDeps(stores, server.origin),
       options,
     );
 
@@ -122,13 +123,13 @@ test("excludeIds loại sáng kiến khỏi kết quả và khỏi prompt gửi 
 });
 
 test("sáng kiến nhiều chunk được ghép lại: model nhìn thấy nội dung của chunk cuối", async () => {
-  const store = new InMemoryVectorStore(DIMS);
+  const stores = createInMemoryVectorStores(DIMS);
   const paragraphs = Array.from({ length: 5 }, (_, i) => `Đoạn ${i + 1}: ${"chi tiết ".repeat(8).trim()}.`);
-  await seed(store, [job("GP-LONG", "Sáng kiến dài", paragraphs.join("\n\n") + "\n\nĐoạn cuối nhắc tới sự cố hiện trường.")], 120);
-  assert.ok((await store.scrollAll()).points.length > 1, "phải được chia thành nhiều chunk");
+  await seed(stores, [job("GP-LONG", "Sáng kiến dài", paragraphs.join("\n\n") + "\n\nĐoạn cuối nhắc tới sự cố hiện trường.")], 120);
+  assert.ok((await stores.forType("solutions").scrollAll()).points.length > 1, "phải được chia thành nhiều chunk");
   const server = await startFakeServer((request) => fakeScoring(request));
   try {
-    const output = await checkDuplicates(input, buildDeps(store, server.origin), options);
+    const output = await checkDuplicates(input, buildDeps(stores, server.origin), options);
 
     assert.equal(server.requests.length, 1);
     const sent = JSON.parse(server.requests[0]!.body.messages[1].content).candidates;
@@ -140,26 +141,96 @@ test("sáng kiến nhiều chunk được ghép lại: model nhìn thấy nội 
   }
 });
 
-test("sáng kiến khác type không được so sánh", async () => {
-  const store = new InMemoryVectorStore(DIMS);
-  await seed(store, [
-    job("YT-1", "Ý tưởng báo cáo sự cố", "Báo cáo sự cố.", "idea"),
-    job("GP-1", "Giải pháp báo cáo sự cố", "Báo cáo sự cố.", "solution"),
+/** Mỗi type một sáng kiến có NỘI DUNG GIỐNG HỆT nhau: nếu có lẫn type thì chắc chắn bị bắt. */
+const SAME_TEXT = "Báo cáo sự cố mặt đất bằng điện thoại.";
+const TWIN_IDS: Record<RecordType, string> = { ideas: "YT-1", solutions: "GP-1", initiatives: "SK-1" };
+
+async function seedTwins(stores: VectorStores) {
+  await seed(
+    stores,
+    RECORD_TYPES.map((type) => job(TWIN_IDS[type], `Báo cáo sự cố (${type})`, SAME_TEXT, type)),
+  );
+}
+
+test("ba type có nội dung giống hệt nhau: kiểm tra mỗi type chỉ thấy và chỉ gửi model sáng kiến cùng type", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  await seedTwins(stores);
+
+  for (const asked of RECORD_TYPES) {
+    const server = await startFakeServer((request) => fakeScoring(request));
+    try {
+      const output = await checkDuplicates({ ...input, type: asked }, buildDeps(stores, server.origin), options);
+
+      assertValidDedupOutput(output);
+      assert.deepEqual(output.matches.map((m) => m.id), [TWIN_IDS[asked]], `hỏi ${asked}`);
+      assert.ok(output.matches.every((m) => m.type === asked));
+      // Sáng kiến của type khác không được rời khỏi collection để tới prompt của model.
+      const sent = JSON.stringify(server.requests.map((request) => request.body));
+      for (const other of RECORD_TYPES.filter((type) => type !== asked)) {
+        assert.doesNotMatch(sent, new RegExp(TWIN_IDS[other]), `prompt của ${asked} lộ sáng kiến ${other}`);
+      }
+    } finally {
+      await server.close();
+    }
+  }
+});
+
+test("type chưa có dữ liệu thì không match, dù type khác có sáng kiến y hệt (và không gọi model)", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, [
+    job("YT-1", "Báo cáo sự cố", SAME_TEXT, "ideas"),
+    job("SK-1", "Báo cáo sự cố", SAME_TEXT, "initiatives"),
   ]);
   const server = await startFakeServer((request) => fakeScoring(request));
   try {
-    const output = await checkDuplicates(input, buildDeps(store, server.origin), options);
-    assert.deepEqual(output.matches.map((m) => m.id), ["GP-1"]);
+    const output = await checkDuplicates({ ...input, type: "solutions" }, buildDeps(stores, server.origin), options);
+    assert.deepEqual(output.matches, []);
+    assert.equal(server.requests.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test("model trả về id của sáng kiến thuộc type khác thì bị bỏ, không lọt vào kết quả", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  await seedTwins(stores);
+  // Model "ảo giác" thêm id của hai type còn lại với điểm cao nhất.
+  const server = await startFakeServer((request) => {
+    const reply = fakeScoring(request);
+    const honest = JSON.parse(reply.json.choices[0]!.message.content).matches;
+    const forged = Object.values(TWIN_IDS).map((id) => ({ id, percent: 99, reason: "model bịa" }));
+    return { ...reply, json: { choices: [{ message: { content: JSON.stringify({ matches: [...forged, ...honest] }) } }] } };
+  });
+  try {
+    const output = await checkDuplicates({ ...input, type: "ideas" }, buildDeps(stores, server.origin), options);
+    assert.deepEqual(output.matches.map((m) => [m.id, m.type]), [["YT-1", "ideas"]]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("type ngoài ideas/solutions/initiatives (kể cả \"solution\" cũ) bị từ chối INVALID_INPUT, không đọc kho, không gọi model", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  await seedTwins(stores);
+  const server = await startFakeServer((request) => fakeScoring(request));
+  try {
+    for (const bogus of ["solution", "idea", "initiative", "project", "other", "SOLUTIONS", ""]) {
+      await assert.rejects(
+        () => checkDuplicates({ ...input, type: bogus as RecordType }, buildDeps(stores, server.origin), options),
+        (error: unknown) => error instanceof DedupError && error.code === "INVALID_INPUT",
+      );
+    }
+    assert.equal(server.requests.length, 0);
   } finally {
     await server.close();
   }
 });
 
 test("kho rỗng trả matches rỗng và không gọi model", async () => {
-  const store = new InMemoryVectorStore(DIMS);
+  const stores = createInMemoryVectorStores(DIMS);
   const server = await startFakeServer((request) => fakeScoring(request));
   try {
-    const output = await checkDuplicates(input, buildDeps(store, server.origin), options);
+    const output = await checkDuplicates(input, buildDeps(stores, server.origin), options);
     assert.deepEqual(output.matches, []);
     assert.equal(server.requests.length, 0);
   } finally {
@@ -168,12 +239,12 @@ test("kho rỗng trả matches rỗng và không gọi model", async () => {
 });
 
 test("index lại một sáng kiến (nội dung mới) thì lần kiểm tra sau thấy bản mới, không nhân đôi", async () => {
-  const store = new InMemoryVectorStore(DIMS);
-  await seed(store, [job("GP-1", "Nền tảng dữ liệu", "Lưu trữ dữ liệu dùng chung.")]);
-  await seed(store, [job("GP-1", "Báo cáo sự cố", "Đã đổi hướng sang báo cáo sự cố.")]);
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, [job("GP-1", "Nền tảng dữ liệu", "Lưu trữ dữ liệu dùng chung.")]);
+  await seed(stores, [job("GP-1", "Báo cáo sự cố", "Đã đổi hướng sang báo cáo sự cố.")]);
   const server = await startFakeServer((request) => fakeScoring(request));
   try {
-    const output = await checkDuplicates(input, buildDeps(store, server.origin), options);
+    const output = await checkDuplicates(input, buildDeps(stores, server.origin), options);
 
     assert.equal(output.matches.length, 1);
     assert.equal(output.matches[0]!.percent, 88);
@@ -183,12 +254,12 @@ test("index lại một sáng kiến (nội dung mới) thì lần kiểm tra sa
 });
 
 test("vượt trần: DedupError CANDIDATE_LIMIT_EXCEEDED và không gọi model", async () => {
-  const store = new InMemoryVectorStore(DIMS);
-  await seed(store, Array.from({ length: 4 }, (_, i) => job(`GP-${i}`, `Sáng kiến ${i}`, "Nội dung.")));
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, Array.from({ length: 4 }, (_, i) => job(`GP-${i}`, `Sáng kiến ${i}`, "Nội dung.")));
   const server = await startFakeServer((request) => fakeScoring(request));
   try {
     await assert.rejects(
-      () => checkDuplicates(input, buildDeps(store, server.origin), { candidateLimit: 3, deadlineMs: 5000 }),
+      () => checkDuplicates(input, buildDeps(stores, server.origin), { candidateLimit: 3, deadlineMs: 5000 }),
       (error: unknown) => error instanceof DedupError && error.code === "CANDIDATE_LIMIT_EXCEEDED",
     );
     assert.equal(server.requests.length, 0);
@@ -198,12 +269,12 @@ test("vượt trần: DedupError CANDIDATE_LIMIT_EXCEEDED và không gọi model
 });
 
 test("model lỗi giữa chừng: SCORING_UNAVAILABLE, không trả kết quả một phần", async () => {
-  const store = new InMemoryVectorStore(DIMS);
-  await seed(store, Array.from({ length: 25 }, (_, i) => job(`GP-${String(i).padStart(2, "0")}`, `Sáng kiến sự cố ${i}`, "Nội dung.")));
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, Array.from({ length: 25 }, (_, i) => job(`GP-${String(i).padStart(2, "0")}`, `Sáng kiến sự cố ${i}`, "Nội dung.")));
   const server = await startFakeServer((request, index) => (index === 1 ? { status: 500 } : fakeScoring(request)));
   try {
     await assert.rejects(
-      () => checkDuplicates(input, buildDeps(store, server.origin), options),
+      () => checkDuplicates(input, buildDeps(stores, server.origin), options),
       (error: unknown) => error instanceof DedupError && error.code === "SCORING_UNAVAILABLE",
     );
   } finally {
@@ -212,13 +283,13 @@ test("model lỗi giữa chừng: SCORING_UNAVAILABLE, không trả kết quả 
 });
 
 test("100 sáng kiến (đúng trần mặc định) chấm xong nhanh nhờ chạy song song", async () => {
-  const store = new InMemoryVectorStore(DIMS);
-  await seed(store, Array.from({ length: 100 }, (_, i) => job(`GP-${String(i).padStart(3, "0")}`, `Sáng kiến ${i}`, i % 2 ? "Có sự cố." : "Không.")));
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, Array.from({ length: 100 }, (_, i) => job(`GP-${String(i).padStart(3, "0")}`, `Sáng kiến ${i}`, i % 2 ? "Có sự cố." : "Không.")));
   // Mỗi lần gọi model mất 200ms: nếu tuần tự thì 10 batch = 2s, song song chỉ ~200ms.
   const server = await startFakeServer((request) => ({ ...fakeScoring(request), delayMs: 200 }));
   try {
     const startedAt = Date.now();
-    const output = await checkDuplicates(input, buildDeps(store, server.origin), options);
+    const output = await checkDuplicates(input, buildDeps(stores, server.origin), options);
     const elapsed = Date.now() - startedAt;
 
     assert.equal(server.requests.length, 10);

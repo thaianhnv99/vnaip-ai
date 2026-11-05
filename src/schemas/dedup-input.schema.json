@@ -2,15 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://vnaip-dedup.invalid/schemas/dedup-input.schema.json",
   "title": "CheckDuplicatesInput",
-  "description": "Hồ sơ đầu vào cần kiểm tra trùng lặp so với các sáng kiến đã được duyệt và index. UNRESOLVED: danh sách type hợp lệ chưa được xác nhận bởi nghiệp vụ VNAIP thật; giá trị hiện tại là giả định tạm, cần rà soát trước khi phát hành.",
+  "description": "Hồ sơ đầu vào cần kiểm tra trùng lặp so với các sáng kiến đã được duyệt và index CÙNG type. Mỗi type (ideas, solutions, initiatives) được lưu ở một collection riêng nên không bao giờ bị so sánh chéo với type khác.",
   "type": "object",
   "additionalProperties": false,
   "required": ["type", "title", "content"],
   "properties": {
     "type": {
       "type": "string",
-      "description": "Loại hồ sơ; chỉ so với các sáng kiến cùng loại. UNRESOLVED: enum tạm, cần xác nhận danh sách type thật từ VNAIP.",
-      "enum": ["solution", "initiative", "project", "other"]
+      "description": "Loại hồ sơ: ideas, solutions hoặc initiatives (khớp chính xác, phân biệt hoa/thường). Chỉ so với các sáng kiến cùng loại, đọc từ collection riêng của loại này.",
+      "enum": ["ideas", "solutions", "initiatives"]
     },
     "title": {
       "type": "string",

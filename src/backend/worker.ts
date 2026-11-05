@@ -4,10 +4,13 @@ import { describeStartupError, startIndexWorker } from './index-service.js';
 /**
  * Tiến trình worker index, chạy tách khỏi tiến trình web (`server.ts`):
  * lấy job từ BullMQ từng cái một, embed rồi ghi Qdrant. Không mở cổng HTTP.
+ * Mỗi job được ghi vào collection riêng của `job.type` (ideas / solutions /
+ * initiatives); type không hợp lệ bị đưa vào hàng chờ lỗi, không retry.
  *
- * Cấu hình bắt buộc khớp với web: REDIS_URL, QUEUE_PREFIX, QUEUE_NAME. Riêng
- * worker cần thêm OPENROUTER_API_KEY, QDRANT_URL, QDRANT_API_KEY, QDRANT_COLLECTION.
- * Thiếu cấu hình thì thoát mã 1 để nền tảng báo hỏng ngay.
+ * Cấu hình bắt buộc khớp với web: REDIS_URL, QUEUE_PREFIX, QUEUE_NAME, và
+ * QDRANT_URL + QDRANT_COLLECTION_PREFIX (web đọc đúng các collection worker ghi).
+ * Riêng worker cần thêm OPENROUTER_API_KEY; QDRANT_API_KEY chỉ cần khi Qdrant không
+ * chạy trên localhost. Thiếu cấu hình thì thoát mã 1 để nền tảng báo hỏng ngay.
  */
 
 const workerId = 'vnaip-dedup-worker';

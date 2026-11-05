@@ -4,7 +4,9 @@ import { buildDependencies, createCheckDuplicatesHandler } from '../check-duplic
 import type { DedupDependencies } from '../dedup.js';
 import type { Request, Response } from 'express';
 import { LlmScorerError } from '../llm-scorer.js';
-import { VectorStoreError } from '../vector-store.js';
+import { VectorStoreError, pointId } from '../vector-store.js';
+import { createVectorStoresFromEnv } from '../qdrant-store.js';
+import { DEFAULT_EMBEDDING_DIMENSIONS } from '../openrouter-embeddings.js';
 import { DedupError } from '../dedup.js';
 
 function fakeRequestResponse(body: unknown) {
@@ -31,14 +33,14 @@ function fakeRequestResponse(body: unknown) {
 }
 
 const validInput = {
-  type: 'solution',
+  type: 'solutions',
   title: 'Giải pháp quản lý hồ sơ',
   content: 'Nội dung mô tả giải pháp quản lý hồ sơ số hóa cho đơn vị hành chính.',
 };
 
 test('request hợp lệ trả 200 với output đúng schema', async () => {
   const deps: DedupDependencies = {
-    findCandidates: async () => [{ id: 'a', type: 'solution', title: 'A', content: 'nội dung A' }],
+    findCandidates: async () => [{ id: 'a', type: 'solutions', title: 'A', content: 'nội dung A' }],
     scoreCandidates: async () => [{ id: 'a', percent: 60, reason: 'giống nhau' }],
   };
 
@@ -59,7 +61,7 @@ test('input sai schema trả 400 INVALID_INPUT', async () => {
     scoreCandidates: async () => [],
   };
   const handler = createCheckDuplicatesHandler(deps, {});
-  const { request, response, state } = fakeRequestResponse({ body: { input: { type: 'solution' } } });
+  const { request, response, state } = fakeRequestResponse({ body: { input: { type: 'solutions' } } });
 
   await handler(request, response, () => {});
 
@@ -87,7 +89,7 @@ test('nguồn ứng viên lỗi trả 502 CANDIDATES_UNAVAILABLE, không lộ ch
 
 test('model lỗi trả 502 SCORING_UNAVAILABLE', async () => {
   const deps: DedupDependencies = {
-    findCandidates: async () => [{ id: 'a', type: 'solution', title: 'A', content: 'x' }],
+    findCandidates: async () => [{ id: 'a', type: 'solutions', title: 'A', content: 'x' }],
     scoreCandidates: async () => {
       throw new Error('provider 500');
     },
@@ -162,7 +164,7 @@ function captureLog() {
 test('trần ứng viên vượt quá trả 503 CANDIDATE_LIMIT_EXCEEDED thay vì kết quả thiếu', async () => {
   const deps: DedupDependencies = {
     findCandidates: async () =>
-      Array.from({ length: 3 }, (_, i) => ({ id: `c${i}`, type: 'solution' as const, title: 't', content: 'c' })),
+      Array.from({ length: 3 }, (_, i) => ({ id: `c${i}`, type: 'solutions' as const, title: 't', content: 'c' })),
     scoreCandidates: async () => {
       throw new Error('không nên được gọi');
     },
@@ -195,7 +197,7 @@ test('nguồn ứng viên báo vượt giới hạn đọc (DedupError) cũng tr
 test('giá trị CHECK_DUPLICATES_CANDIDATE_LIMIT không hợp lệ rơi về mặc định 100, không tắt giới hạn', async () => {
   const candidates = Array.from({ length: 101 }, (_, i) => ({
     id: `c${i}`,
-    type: 'solution' as const,
+    type: 'solutions' as const,
     title: 't',
     content: 'c',
   }));
@@ -218,10 +220,10 @@ test('thiếu cấu hình trả 503 TOOL_NOT_CONFIGURED, và lần gọi sau ch�
     () => {
       built += 1;
       if (!configured) {
-        throw new VectorStoreError('NOT_CONFIGURED', 'Qdrant chưa được cấu hình (thiếu QDRANT_URL hoặc QDRANT_COLLECTION)');
+        throw new VectorStoreError('NOT_CONFIGURED', 'Qdrant chưa được cấu hình (thiếu QDRANT_URL hoặc QDRANT_COLLECTION_PREFIX)');
       }
       return {
-        findCandidates: async () => [{ id: 'a', type: 'solution', title: 'A', content: 'x' }],
+        findCandidates: async () => [{ id: 'a', type: 'solutions', title: 'A', content: 'x' }],
         scoreCandidates: async () => [{ id: 'a', percent: 40, reason: 'ok' }],
       };
     },
@@ -264,7 +266,7 @@ test('log thành công và thất bại ghi mã, số lượng, thời gian; kh�
   const { lines, log } = captureLog();
   const ok = createCheckDuplicatesHandler(
     {
-      findCandidates: async () => [{ id: 'a', type: 'solution', title: 'TIÊU ĐỀ BÍ MẬT', content: 'NỘI DUNG BÍ MẬT' }],
+      findCandidates: async () => [{ id: 'a', type: 'solutions', title: 'TIÊU ĐỀ BÍ MẬT', content: 'NỘI DUNG BÍ MẬT' }],
       scoreCandidates: async () => [{ id: 'a', percent: 60, reason: 'LÝ DO BÍ MẬT' }],
     },
     {},
@@ -311,5 +313,64 @@ test('buildDependencies: thiếu khoá/model chấm điểm ném NOT_CONFIGURED,
 
 test('buildDependencies: QDRANT_MOCK_MODE + LLM_MOCK_MODE chạy được và kho rỗng thì không có ứng viên', async () => {
   const deps = buildDependencies({ QDRANT_MOCK_MODE: 'true', LLM_MOCK_MODE: 'true' }, () => {});
-  assert.deepEqual(await deps.findCandidates({ type: 'solution', title: 't', content: 'c' }), []);
+  assert.deepEqual(await deps.findCandidates({ type: 'solutions', title: 't', content: 'c' }), []);
+});
+
+// --- type: ba collection riêng ---
+
+test('type ngoài ideas/solutions/initiatives trả 400 INVALID_INPUT và không đụng tới nguồn ứng viên hay model', async () => {
+  let touched = 0;
+  const deps: DedupDependencies = {
+    findCandidates: async () => {
+      touched += 1;
+      return [];
+    },
+    scoreCandidates: async () => {
+      touched += 1;
+      return [];
+    },
+  };
+  const handler = createCheckDuplicatesHandler(deps, {});
+
+  for (const type of ['solution', 'idea', 'initiative', 'project', 'other', 'Ideas', '', undefined, 7]) {
+    const { request, response, state } = fakeRequestResponse({ body: { input: { ...validInput, type } } });
+    await handler(request, response, () => {});
+    assert.equal(state.status, 400, `type ${JSON.stringify(type)}`);
+    assert.equal((state.body as any).code, 'INVALID_INPUT');
+  }
+  assert.equal(touched, 0);
+});
+
+test('buildDependencies: mỗi type chỉ thấy dữ liệu trong collection của chính nó (kho dùng chung với worker inline)', async () => {
+  const dimensions = DEFAULT_EMBEDDING_DIMENSIONS;
+  const env = { QDRANT_MOCK_MODE: 'true', LLM_MOCK_MODE: 'true' };
+  const deps = buildDependencies(env, () => {});
+
+  // Ghi như worker: qua đúng kho theo type của bộ ba kho mock dùng chung trong tiến trình.
+  const stores = createVectorStoresFromEnv(env, dimensions);
+  for (const type of ['ideas', 'initiatives'] as const) {
+    await stores.forType(type).upsertChunks([
+      {
+        id: pointId(`ROUTE-${type}`, 0),
+        vector: new Array(dimensions).fill(0.1),
+        payload: {
+          ideaId: `ROUTE-${type}`,
+          type,
+          title: `Tiêu đề ${type}`,
+          chunkIndex: 0,
+          chunkCount: 1,
+          content: 'Báo cáo sự cố.',
+          metadata: {},
+          embeddingModel: 'mock-embedding',
+          indexedAt: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ]);
+  }
+
+  const idsFor = async (type: 'ideas' | 'solutions' | 'initiatives') =>
+    (await deps.findCandidates({ type, title: 't', content: 'c' })).map((candidate) => candidate.id);
+  assert.deepEqual(await idsFor('ideas'), ['ROUTE-ideas']);
+  assert.deepEqual(await idsFor('initiatives'), ['ROUTE-initiatives']);
+  assert.deepEqual(await idsFor('solutions'), [], 'solutions chưa có gì: không được thấy ideas hay initiatives');
 });

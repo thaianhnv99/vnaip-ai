@@ -2,24 +2,42 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseDedupInput } from '../validate-input.js';
 
-const valid = { type: 'solution', title: 'Tiêu đề', content: 'Nội dung' };
+const valid = { type: 'solutions', title: 'Tiêu đề', content: 'Nội dung' };
 
 test('input hợp lệ được parse đúng', () => {
   const parsed = parseDedupInput(valid);
-  assert.equal(parsed.type, 'solution');
+  assert.equal(parsed.type, 'solutions');
   assert.equal(parsed.title, 'Tiêu đề');
 });
 
 test('thiếu title bị từ chối', () => {
-  assert.throws(() => parseDedupInput({ type: 'solution', content: 'x' }));
+  assert.throws(() => parseDedupInput({ type: 'solutions', content: 'x' }));
 });
 
 test('thiếu content bị từ chối', () => {
-  assert.throws(() => parseDedupInput({ type: 'solution', title: 'x' }));
+  assert.throws(() => parseDedupInput({ type: 'solutions', title: 'x' }));
 });
 
-test('type không phải "solution" bị từ chối', () => {
-  assert.throws(() => parseDedupInput({ ...valid, type: 'other' }));
+test('cả ba type ideas / solutions / initiatives đều được nhận và giữ nguyên', () => {
+  for (const type of ['ideas', 'solutions', 'initiatives']) {
+    assert.equal(parseDedupInput({ ...valid, type }).type, type);
+  }
+});
+
+test('type ngoài ba giá trị bị từ chối, kể cả giá trị của mô hình cũ và sai hoa/thường/khoảng trắng', () => {
+  const bogus = [
+    'solution', 'idea', 'initiative', 'project', 'other', // mô hình cũ / schema tạm cũ
+    'Ideas', 'SOLUTIONS', ' ideas', 'ideas ', '', 'ideas,solutions', // sai dạng
+    undefined, null, 1, true, ['ideas'], { type: 'ideas' }, // sai kiểu
+  ];
+  for (const type of bogus) {
+    assert.throws(
+      () => parseDedupInput({ ...valid, type }),
+      /type phải là một trong: ideas, solutions, initiatives/,
+      `type ${JSON.stringify(type)}`,
+    );
+  }
+  assert.throws(() => parseDedupInput({ title: 'x', content: 'y' }), /type/);
 });
 
 test('title rỗng bị từ chối', () => {

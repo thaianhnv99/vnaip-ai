@@ -34,7 +34,7 @@ after(() => {
 });
 
 const validBody = {
-  body: { input: { type: 'solution', title: 'Ứng dụng báo cáo sự cố', content: 'Báo cáo sự cố mặt đất.' } },
+  body: { input: { type: 'solutions', title: 'Ứng dụng báo cáo sự cố', content: 'Báo cáo sự cố mặt đất.' } },
 };
 
 async function withApp(

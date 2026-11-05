@@ -14,7 +14,7 @@ import { startFakeServer, type RecordedRequest } from "./helpers/fake-http-serve
 
 const API_KEY = "sk-or-test-key-should-never-leak";
 const input: DedupInput = {
-  type: "solution",
+  type: "solutions",
   title: "Ứng dụng báo cáo sự cố",
   content: "Báo cáo sự cố mặt đất qua điện thoại.",
 };
@@ -22,7 +22,7 @@ const input: DedupInput = {
 function candidates(count: number, content = "nội dung"): Candidate[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `c${String(i).padStart(3, "0")}`,
-    type: "solution" as const,
+    type: "solutions" as const,
     title: `Ứng viên ${i}`,
     content,
   }));
@@ -434,8 +434,8 @@ test("mock scorer chấm theo độ trùng từ vựng và trả một mục cho
   const results = await scorer(
     input,
     [
-      { id: "gan", type: "solution", title: "Ứng dụng báo cáo sự cố", content: "Báo cáo sự cố mặt đất qua điện thoại." },
-      { id: "xa", type: "solution", title: "Nền tảng dữ liệu", content: "Lưu trữ tập trung." },
+      { id: "gan", type: "solutions", title: "Ứng dụng báo cáo sự cố", content: "Báo cáo sự cố mặt đất qua điện thoại." },
+      { id: "xa", type: "solutions", title: "Nền tảng dữ liệu", content: "Lưu trữ tập trung." },
     ],
     farFuture(),
   );

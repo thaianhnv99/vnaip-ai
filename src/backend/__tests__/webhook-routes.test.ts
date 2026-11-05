@@ -8,7 +8,8 @@ import { MAX_BATCH_SIZE } from "../index-event.js";
 import { createIndexJobHandler, type IndexJob } from "../index-job.js";
 import { InMemoryJobQueue, type JobQueue } from "../job-queue.js";
 import { createMockEmbedder } from "../openrouter-embeddings.js";
-import { InMemoryVectorStore } from "../vector-store.js";
+import { createInMemoryVectorStores } from "../vector-store.js";
+import { RECORD_TYPES } from "../record-type.js";
 import {
   InMemoryReplayGuard,
   RedisReplayGuard,
@@ -46,7 +47,7 @@ function signatureHeaders(
 
 const validEvent = {
   id: "GP-1",
-  type: "solution",
+  type: "solutions",
   title: "MARKER-TITLE ứng dụng báo cáo sự cố",
   content: "MARKER-CONTENT nội dung sáng kiến cần được index.",
 };
@@ -64,11 +65,13 @@ async function setup(overrides: SetupOverrides = {}) {
   const log = (level: string, event: string, details: Record<string, unknown>) => {
     logs.push({ level, event, ...details });
   };
-  const store = new InMemoryVectorStore(DIMS);
+  // Ba kho, mỗi type một collection; `store` là collection "solutions", type của validEvent.
+  const stores = createInMemoryVectorStores(DIMS);
+  const store = stores.forType("solutions");
   const queue = new InMemoryJobQueue<IndexJob>();
   await queue.startConsuming(
     createIndexJobHandler(
-      { embed: createMockEmbedder(DIMS), store, embeddingModel: "mock", chunkChars: 100 },
+      { embed: createMockEmbedder(DIMS), stores, embeddingModel: "mock", chunkChars: 100 },
       { maxAttempts: 3, baseDelayMs: 5, maxDelayMs: 10 },
       log as never,
     ),
@@ -125,6 +128,7 @@ async function setup(overrides: SetupOverrides = {}) {
 
   return {
     store,
+    stores,
     queue,
     logs,
     post,
@@ -1048,4 +1052,148 @@ test("loadWebhookHmacSecrets: thiếu secret mà còn WEBHOOK_API_KEYS thì báo
     () => loadWebhookHmacSecrets({}),
     (error: unknown) => error instanceof WebhookConfigError && !/WEBHOOK_API_KEYS/.test(error.message),
   );
+});
+
+// ------------------------------------------------- type quyết định collection
+
+/** Hàng đợi ghi lại job thay vì xử lý, để chứng minh job có (hay không) được đẩy vào. */
+function recordingQueue() {
+  const published: IndexJob[] = [];
+  const queue: JobQueue<IndexJob> = {
+    publish: async (job) => void published.push(job),
+    startConsuming: async () => ({ stop: async () => undefined }),
+  };
+  return { published, queue };
+}
+
+test("type không hợp lệ: 400 INVALID_EVENT nêu tên trường, không enqueue, không giữ chỗ replay, không lặp lại giá trị gửi", async () => {
+  const { published, queue } = recordingQueue();
+  const claims: string[] = [];
+  const spyGuard: ReplayGuard = {
+    claim: async (key) => {
+      claims.push(key);
+      return true;
+    },
+    release: async () => undefined,
+  };
+  const t = await setup({ queue, replayGuard: spyGuard });
+  try {
+    // Gồm các giá trị của mô hình cũ ("solution", "initiative", "idea", "project", "other").
+    const bogusTypes: unknown[] = [
+      "solution", "initiative", "idea", "project", "other", "Ideas", "SOLUTIONS", " ideas", "ideas ",
+      "GIA-TRI-NHAY-CAM", "", "   ", 123, null, ["ideas"], { type: "ideas" }, undefined,
+    ];
+    for (const type of bogusTypes) {
+      const response = await t.post({ ...validEvent, type });
+      assert.equal(response.status, 400, `type ${JSON.stringify(type)}`);
+      const error = (await response.json()) as { code: string; message: string };
+      assert.equal(error.code, "INVALID_EVENT");
+      assert.ok(error.message.includes("type"), error.message);
+      assert.ok(error.message.includes("ideas, solutions, initiatives"), error.message);
+      assert.equal(error.message.includes("GIA-TRI-NHAY-CAM"), false);
+    }
+    // Thiếu hẳn trường type.
+    const { type: _omitted, ...withoutType } = validEvent;
+    assert.equal((await t.post(withoutType)).status, 400);
+
+    assert.equal(published.length, 0);
+    assert.deepEqual(claims, []);
+  } finally {
+    await t.close();
+  }
+});
+
+test("mảng có một phần tử sai type: cả mảng bị từ chối với chỉ số phần tử, không phần tử nào được enqueue", async () => {
+  const { published, queue } = recordingQueue();
+  const t = await setup({ queue });
+  try {
+    const response = await t.post([
+      { ...validEvent, id: "GP-A", type: "ideas" },
+      { ...validEvent, id: "GP-B", type: "solution" },
+      { ...validEvent, id: "GP-C", type: "initiatives" },
+    ]);
+
+    assert.equal(response.status, 400);
+    const error = (await response.json()) as { code: string; message: string };
+    assert.equal(error.code, "INVALID_EVENT");
+    assert.ok(error.message.includes("[1]") && error.message.includes("type"), error.message);
+    assert.equal(published.length, 0, "phần tử hợp lệ đứng trước cũng không được nhận");
+  } finally {
+    await t.close();
+  }
+});
+
+test("mỗi type hợp lệ được nhận (202) và job mang đúng type", async () => {
+  const { published, queue } = recordingQueue();
+  const t = await setup({ queue });
+  try {
+    for (const type of RECORD_TYPES) {
+      assert.equal((await t.post({ ...validEvent, id: `GP-${type}`, type })).status, 202);
+    }
+    assert.deepEqual(
+      published.map((job) => [job.ideaId, job.type]),
+      RECORD_TYPES.map((type) => [`GP-${type}`, type]),
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("qua hàng đợi thật: mỗi sáng kiến vào đúng collection của type, hai collection còn lại không nhận gì", async () => {
+  const t = await setup();
+  try {
+    // Mảng gồm cả ba type, kể cả hai phần tử khác type dùng chung `id`.
+    const response = await t.post([
+      { ...validEvent, id: "I-1", type: "ideas", content: "Nội dung ideas." },
+      { ...validEvent, id: "S-1", type: "solutions", content: "Nội dung solutions." },
+      { ...validEvent, id: "N-1", type: "initiatives", content: "Nội dung initiatives." },
+      { ...validEvent, id: "DUNG-CHUNG", type: "ideas", content: "Bản ideas." },
+      { ...validEvent, id: "DUNG-CHUNG", type: "initiatives", content: "Bản initiatives." },
+    ]);
+    assert.equal(response.status, 202);
+    await t.queue.drain();
+
+    const contents = async (type: (typeof RECORD_TYPES)[number]) =>
+      (await t.stores.forType(type).scrollAll()).points
+        .map((point) => [point.payload.ideaId, point.payload.type, point.payload.content])
+        .sort();
+    assert.deepEqual(await contents("ideas"), [
+      ["DUNG-CHUNG", "ideas", "Bản ideas."],
+      ["I-1", "ideas", "Nội dung ideas."],
+    ]);
+    assert.deepEqual(await contents("solutions"), [["S-1", "solutions", "Nội dung solutions."]]);
+    assert.deepEqual(await contents("initiatives"), [
+      ["DUNG-CHUNG", "initiatives", "Bản initiatives."],
+      ["N-1", "initiatives", "Nội dung initiatives."],
+    ]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("job type cũ (\"solution\") còn trong hàng đợi từ trước khi tách collection: worker đưa vào hàng chờ lỗi, không retry, không ghi gì", async () => {
+  const t = await setup();
+  try {
+    // Chèn thẳng vào hàng đợi, bỏ qua webhook, như một job tồn từ phiên bản trước.
+    await t.queue.publish({
+      jobId: "job-cu",
+      ideaId: "GP-CU",
+      type: "solution" as never,
+      title: "Job cũ",
+      content: "Nội dung job cũ.",
+      metadata: {},
+      receivedAt: "2026-11-04T00:00:00.000Z",
+    });
+    await t.queue.drain();
+
+    assert.deepEqual(
+      t.queue.deadLetters.map((entry) => [entry.job.jobId, entry.reason, entry.attempt]),
+      [["job-cu", "non_retryable:INVALID_TYPE", 1]],
+    );
+    for (const type of RECORD_TYPES) {
+      assert.equal((await t.stores.forType(type).scrollAll()).points.length, 0);
+    }
+  } finally {
+    await t.close();
+  }
 });

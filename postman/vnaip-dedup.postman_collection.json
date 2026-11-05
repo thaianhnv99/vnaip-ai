@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "vnaip-dedup (local)",
-    "description": "2 API test local: GET /health va POST /webhooks/idea-approved. Chay 'npm run dev:backend' truoc, dung environment 'vnaip-dedup (local)'. Chu ky HMAC cua webhook duoc tinh o pre-request script cap collection (webhookHmacSecret trong environment phai trung WEBHOOK_HMAC_SECRETS cua app).",
+    "description": "API test local: GET /health, POST /webhooks/idea-approved (type chi nhan ideas, solutions, initiatives) va truy van Qdrant Docker local (http://localhost:6333, khong can API key). Chay 'npm run dev:backend' truoc, dung environment 'vnaip-dedup (local)'. Chu ky HMAC cua webhook duoc tinh o pre-request script cap collection (webhookHmacSecret trong environment phai trung WEBHOOK_HMAC_SECRETS cua app).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -68,7 +68,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"id\": \"idea-001\",\n  \"type\": \"initiative\",\n  \"title\": \"Sang kien thu nghiem\",\n  \"content\": \"Noi dung chi tiet cua sang kien de test webhook.\",\n  \"metadata\": { \"author\": \"tester\" }\n}"
+          "raw": "{\n  \"id\": \"idea-001\",\n  \"type\": \"initiatives\",\n  \"title\": \"Sang kien thu nghiem\",\n  \"content\": \"Noi dung chi tiet cua sang kien de test webhook.\",\n  \"metadata\": { \"author\": \"tester\" }\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/webhooks/idea-approved",
@@ -105,7 +105,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "[\n  {\n    \"id\": \"idea-batch-001\",\n    \"type\": \"initiative\",\n    \"title\": \"Sang kien batch 1\",\n    \"content\": \"Noi dung sang kien dau tien trong mang.\"\n  },\n  {\n    \"id\": \"idea-batch-002\",\n    \"type\": \"initiative\",\n    \"title\": \"Sang kien batch 2\",\n    \"content\": \"Noi dung sang kien thu hai trong mang.\",\n    \"metadata\": { \"author\": \"tester\" }\n  }\n]"
+          "raw": "[\n  {\n    \"id\": \"idea-batch-001\",\n    \"type\": \"initiatives\",\n    \"title\": \"Sang kien batch 1\",\n    \"content\": \"Noi dung sang kien dau tien trong mang.\"\n  },\n  {\n    \"id\": \"idea-batch-002\",\n    \"type\": \"initiatives\",\n    \"title\": \"Sang kien batch 2\",\n    \"content\": \"Noi dung sang kien thu hai trong mang.\",\n    \"metadata\": { \"author\": \"tester\" }\n  }\n]"
         },
         "url": {
           "raw": "{{baseUrl}}/webhooks/idea-approved",
@@ -144,7 +144,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "[\n  {\n    \"id\": \"idea-batch-003\",\n    \"type\": \"initiative\",\n    \"title\": \"Phan tu hop le\",\n    \"content\": \"Noi dung.\"\n  },\n  {\n    \"id\": \"idea-batch-004\",\n    \"type\": \"initiative\",\n    \"title\": \"Phan tu thieu content\"\n  }\n]"
+          "raw": "[\n  {\n    \"id\": \"idea-batch-003\",\n    \"type\": \"initiatives\",\n    \"title\": \"Phan tu hop le\",\n    \"content\": \"Noi dung.\"\n  },\n  {\n    \"id\": \"idea-batch-004\",\n    \"type\": \"initiatives\",\n    \"title\": \"Phan tu thieu content\"\n  }\n]"
         },
         "url": {
           "raw": "{{baseUrl}}/webhooks/idea-approved",
@@ -181,7 +181,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"id\": \"idea-002\",\n  \"type\": \"initiative\",\n  \"title\": \"Test sai chu ky\",\n  \"content\": \"Noi dung.\"\n}"
+          "raw": "{\n  \"id\": \"idea-002\",\n  \"type\": \"initiatives\",\n  \"title\": \"Test sai chu ky\",\n  \"content\": \"Noi dung.\"\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/webhooks/idea-approved",
@@ -205,11 +205,10 @@
       ]
     },
     {
-      "name": "Qdrant - scroll tat ca point trong collection",
+      "name": "Qdrant - scroll tat ca point trong collection cua recordType",
       "request": {
         "method": "POST",
         "header": [
-          { "key": "api-key", "value": "{{qdrantApiKey}}" },
           { "key": "Content-Type", "value": "application/json" }
         ],
         "body": {
@@ -217,11 +216,11 @@
           "raw": "{\n  \"limit\": 20,\n  \"with_payload\": true,\n  \"with_vector\": false\n}"
         },
         "url": {
-          "raw": "{{qdrantUrl}}/collections/{{qdrantCollection}}/points/scroll",
+          "raw": "{{qdrantUrl}}/collections/{{qdrantCollectionPrefix}}_{{recordType}}/points/scroll",
           "host": ["{{qdrantUrl}}"],
-          "path": ["collections", "{{qdrantCollection}}", "points", "scroll"]
+          "path": ["collections", "{{qdrantCollectionPrefix}}_{{recordType}}", "points", "scroll"]
         },
-        "description": "Khong con datasetKey (bo 2026-11-04): moi sang kien nam chung mot collection. Them filter ideaId neu chi muon xem mot sang kien."
+        "description": "Mo hinh du lieu: moi type (ideas, solutions, initiatives) mot collection rieng, ten <qdrantCollectionPrefix>_<recordType>. Doi bien recordType trong environment de xem collection cua type khac. Them filter ideaId neu chi muon xem mot sang kien."
       },
       "event": [
         {
@@ -236,14 +235,14 @@
       ]
     },
     {
-      "name": "Qdrant - thong tin collection",
+      "name": "Qdrant - thong tin collection cua recordType",
       "request": {
         "method": "GET",
-        "header": [{ "key": "api-key", "value": "{{qdrantApiKey}}" }],
+        "header": [],
         "url": {
-          "raw": "{{qdrantUrl}}/collections/{{qdrantCollection}}",
+          "raw": "{{qdrantUrl}}/collections/{{qdrantCollectionPrefix}}_{{recordType}}",
           "host": ["{{qdrantUrl}}"],
-          "path": ["collections", "{{qdrantCollection}}"]
+          "path": ["collections", "{{qdrantCollectionPrefix}}_{{recordType}}"]
         }
       },
       "event": [
@@ -269,7 +268,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"id\": \"idea-003\",\n  \"type\": \"initiative\"\n}"
+          "raw": "{\n  \"id\": \"idea-003\",\n  \"type\": \"initiatives\"\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/webhooks/idea-approved",
@@ -286,6 +285,44 @@
               "pm.test('status 400', () => pm.response.to.have.status(400));",
               "pm.test('code INVALID_EVENT', () => {",
               "  pm.expect(pm.response.json().code).to.eql('INVALID_EVENT');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhook idea-approved - type khong hop le (400)",
+      "request": {
+        "method": "POST",
+        "description": "type phai la mot trong ideas, solutions, initiatives. Gia tri cu 'solution' (so it) bi tu choi 400 truoc khi co job nao vao hang doi.",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Webhook-Timestamp", "value": "{{webhookTimestamp}}" },
+          { "key": "X-Webhook-Signature", "value": "{{webhookSignature}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"idea-004\",\n  \"type\": \"solution\",\n  \"title\": \"Test type sai\",\n  \"content\": \"Noi dung.\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/idea-approved",
+          "host": ["{{baseUrl}}"],
+          "path": ["webhooks", "idea-approved"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));",
+              "pm.test('INVALID_EVENT nen ten truong type va cac gia tri hop le', () => {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.code).to.eql('INVALID_EVENT');",
+              "  pm.expect(body.message).to.include('type');",
+              "  pm.expect(body.message).to.include('ideas, solutions, initiatives');",
               "});"
             ]
           }

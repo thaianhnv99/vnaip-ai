@@ -4,18 +4,23 @@
  * worker (`parseIndexEvent` rồi `processIndexJob`), nên dữ liệu giống hệt dữ liệu
  * webhook tạo ra.
  *
- *   npx tsx scripts/seed-ideas.ts --collection vnaip_dedup_dev           # nạp
- *   npx tsx scripts/seed-ideas.ts --collection vnaip_dedup_dev --clean   # xoá
+ *   npx tsx scripts/seed-ideas.ts --collection-prefix vnaip_dedup_dev           # nạp
+ *   npx tsx scripts/seed-ideas.ts --collection-prefix vnaip_dedup_dev --clean   # xoá
  *
- * Cấu hình đọc từ .env như server: QDRANT_URL, QDRANT_API_KEY, QDRANT_COLLECTION,
- * và OPENROUTER_API_KEY (hoặc EMBEDDING_MOCK_MODE=true: hướng A không dùng vector
- * khi truy vấn nên vector giả đủ để thử luồng kiểm tra trùng).
+ * Mô hình dữ liệu: ba collection riêng theo type, `<prefix>_ideas`,
+ * `<prefix>_solutions`, `<prefix>_initiatives`. Mỗi sáng kiến mẫu được nạp vào
+ * collection của ĐÚNG `type` ghi trong scripts/seed-ideas.json, và `--clean` xoá nó
+ * khỏi đúng collection đó.
+ *
+ * Cấu hình đọc từ .env như server: QDRANT_URL, QDRANT_COLLECTION_PREFIX (Qdrant local
+ * bằng Docker không cần API key), và OPENROUTER_API_KEY (hoặc EMBEDDING_MOCK_MODE=true:
+ * hướng A không dùng vector khi truy vấn nên vector giả đủ để thử luồng kiểm tra trùng).
  *
  * An toàn:
- * - `--collection` bắt buộc và phải TRÙNG `QDRANT_COLLECTION`: chống nạp nhầm vào
- *   collection khác vì quên đổi .env.
- * - Từ chối collection có chữ "prod": dữ liệu mẫu giả sẽ hiện ra như sáng kiến thật
- *   trong kết quả kiểm tra trùng.
+ * - `--collection-prefix` bắt buộc và phải TRÙNG `QDRANT_COLLECTION_PREFIX`: chống nạp
+ *   nhầm vào bộ collection khác vì quên đổi .env.
+ * - Từ chối prefix có chữ "prod" (nên mọi collection dẫn xuất cũng không có): dữ liệu
+ *   mẫu giả sẽ hiện ra như sáng kiến thật trong kết quả kiểm tra trùng.
  * - Mọi id mẫu bắt đầu bằng `SEED-`; `--clean` chỉ xoá đúng các id trong
  *   scripts/seed-ideas.json, không xoá gì khác.
  * - Từ chối QDRANT_MOCK_MODE=true: kho trong bộ nhớ mất ngay khi script thoát.
@@ -26,7 +31,9 @@ import { fileURLToPath } from 'node:url';
 import { parseIndexEvent } from '../src/backend/index-event.js';
 import { processIndexJob, type IndexJob } from '../src/backend/index-job.js';
 import { createEmbedderFromEnv, loadEmbeddingConfig } from '../src/backend/openrouter-embeddings.js';
-import { createVectorStoreFromEnv } from '../src/backend/qdrant-store.js';
+import { createVectorStoresFromEnv, loadQdrantConfig } from '../src/backend/qdrant-store.js';
+import { RECORD_TYPES, type RecordType } from '../src/backend/record-type.js';
+import { lazyEnsureCollections } from '../src/backend/vector-store.js';
 
 const SEED_FILE = fileURLToPath(new URL('./seed-ideas.json', import.meta.url));
 const SEED_PREFIX = 'SEED-';
@@ -37,7 +44,7 @@ async function loadSeedIdeas(): Promise<IndexJob[]> {
 
   const seen = new Set<string>();
   return raw.map((item, position) => {
-    const event = parseIndexEvent(item); // cùng luật với webhook
+    const event = parseIndexEvent(item); // cùng luật với webhook, kể cả type phải là một trong 3 giá trị
     if (!event.ideaId.startsWith(SEED_PREFIX)) {
       throw new Error(`Mục ${position}: id phải bắt đầu bằng "${SEED_PREFIX}"`);
     }
@@ -58,49 +65,65 @@ async function loadSeedIdeas(): Promise<IndexJob[]> {
 async function main() {
   const args = process.argv.slice(2);
   const clean = args.includes('--clean');
-  const flagAt = args.indexOf('--collection');
+  const flagAt = args.indexOf('--collection-prefix');
   const requested = flagAt >= 0 ? args[flagAt + 1] : undefined;
-  const collection = process.env.QDRANT_COLLECTION;
+  const prefix = process.env.QDRANT_COLLECTION_PREFIX;
 
   if (process.env.QDRANT_MOCK_MODE === 'true') {
     fail('QDRANT_MOCK_MODE=true dùng kho trong bộ nhớ, dữ liệu mất ngay khi script thoát. Đặt QDRANT_MOCK_MODE=false (hoặc bỏ) và cấu hình Qdrant thật.');
   }
   if (!requested) {
-    fail(`Thiếu --collection <tên>. Ví dụ: npx tsx scripts/seed-ideas.ts --collection ${collection || 'vnaip_dedup_dev'}`);
+    // --collection là cờ của bản một-collection (đã bỏ): nhắc để khỏi tưởng nó còn hiệu lực.
+    const hint = args.includes('--collection') ? ' (--collection đã được thay bằng --collection-prefix vì giờ mỗi type một collection)' : '';
+    fail(`Thiếu --collection-prefix <tiền tố>${hint}. Ví dụ: npx tsx scripts/seed-ideas.ts --collection-prefix ${prefix || 'vnaip_dedup_dev'}`);
   }
-  if (requested !== collection) {
-    fail(`--collection "${requested}" không khớp QDRANT_COLLECTION trong môi trường ("${collection ?? ''}"). Sửa .env hoặc tên truyền vào để chắc chắn nạp đúng nơi.`);
+  if (requested !== prefix) {
+    fail(`--collection-prefix "${requested}" không khớp QDRANT_COLLECTION_PREFIX trong môi trường ("${prefix ?? ''}"). Sửa .env hoặc tên truyền vào để chắc chắn nạp đúng nơi.`);
   }
   if (/prod/i.test(requested)) {
-    fail(`Từ chối collection "${requested}": dữ liệu mẫu giả không được nạp vào môi trường production.`);
+    fail(`Từ chối prefix "${requested}": dữ liệu mẫu giả không được nạp vào môi trường production.`);
   }
 
   const ideas = await loadSeedIdeas();
   const embeddingConfig = loadEmbeddingConfig();
   const mockEmbedding = process.env.EMBEDDING_MOCK_MODE === 'true';
-  const store = createVectorStoreFromEnv(process.env, embeddingConfig.dimensions);
-  await store.ensureCollection();
+  const collections = loadQdrantConfig(process.env, embeddingConfig.dimensions).collections;
+  const stores = createVectorStoresFromEnv(process.env, embeddingConfig.dimensions);
+  const ensureReady = lazyEnsureCollections(stores);
+  // Tạo đủ cả ba collection, kể cả type không có sáng kiến mẫu nào.
+  for (const type of RECORD_TYPES) await ensureReady(type);
 
   if (clean) {
-    for (const idea of ideas) await store.deleteIdea(idea.ideaId);
-    console.log(`Đã xoá ${ideas.length} sáng kiến mẫu khỏi collection "${requested}".`);
+    // Mỗi sáng kiến chỉ bị xoá khỏi collection của chính type của nó.
+    for (const idea of ideas) await stores.forType(idea.type).deleteIdea(idea.ideaId);
+    for (const type of RECORD_TYPES) {
+      console.log(`  ${collections[type]}: đã xoá ${ideas.filter((idea) => idea.type === type).length} sáng kiến mẫu`);
+    }
+    console.log(`Đã xoá ${ideas.length} sáng kiến mẫu khỏi ${RECORD_TYPES.length} collection (tiền tố "${requested}").`);
     return;
   }
 
   const embed = createEmbedderFromEnv();
+  const chunksByType = new Map<RecordType, number>();
+  const ideasByType = new Map<RecordType, number>();
   let chunks = 0;
   for (const idea of ideas) {
     const result = await processIndexJob(idea, {
       embed,
-      store,
+      stores,
       // Gắn nhãn đúng để sau này biết vector nào là giả (cần reindex khi chuyển sang hướng B).
       embeddingModel: mockEmbedding ? 'mock-embedding' : embeddingConfig.model,
     });
     chunks += result.chunks;
-    console.log(`  ${idea.ideaId}: ${result.chunks} chunk`);
+    chunksByType.set(idea.type, (chunksByType.get(idea.type) ?? 0) + result.chunks);
+    ideasByType.set(idea.type, (ideasByType.get(idea.type) ?? 0) + 1);
+    console.log(`  ${collections[idea.type]}: ${idea.ideaId}: ${result.chunks} chunk`);
+  }
+  for (const type of RECORD_TYPES) {
+    console.log(`  ${collections[type]}: ${ideasByType.get(type) ?? 0} sáng kiến, ${chunksByType.get(type) ?? 0} chunk`);
   }
   console.log(
-    `Đã nạp ${ideas.length} sáng kiến mẫu (${chunks} chunk) vào collection "${requested}"` +
+    `Đã nạp ${ideas.length} sáng kiến mẫu (${chunks} chunk) vào ${RECORD_TYPES.length} collection (tiền tố "${requested}")` +
       `${mockEmbedding ? ' với vector GIẢ' : ''}. Xoá bằng --clean.`,
   );
 }

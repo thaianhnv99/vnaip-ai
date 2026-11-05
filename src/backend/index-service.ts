@@ -3,8 +3,8 @@ import {
   loadEmbeddingConfig,
   EmbeddingError,
 } from "./openrouter-embeddings.js";
-import { createVectorStoreFromEnv } from "./qdrant-store.js";
-import { VectorStoreError } from "./vector-store.js";
+import { createVectorStoresFromEnv } from "./qdrant-store.js";
+import { VectorStoreError, lazyEnsureCollections } from "./vector-store.js";
 import {
   InMemoryJobQueue,
   loadRetryPolicy,
@@ -157,19 +157,16 @@ export async function startIndexWorker(
 function buildIndexHandler(env: NodeJS.ProcessEnv, log: JobLogger): JobHandler<IndexJob> {
   const embeddingConfig = loadEmbeddingConfig(env);
   const embed = createEmbedderFromEnv(env);
-  const store = createVectorStoreFromEnv(env, embeddingConfig.dimensions);
+  // Ba store, mỗi type (ideas / solutions / initiatives) một collection; job được ghi
+  // vào store của đúng `job.type`.
+  const stores = createVectorStoresFromEnv(env, embeddingConfig.dimensions);
 
-  // Tạo collection ở job đầu tiên thay vì lúc khởi động, để Qdrant chậm hay lỗi
-  // không làm tiến trình khởi động chậm; lỗi thì job được retry.
-  let ready: Promise<void> | undefined;
-  const ensureReady = () =>
-    (ready ??= store.ensureCollection().catch((error) => {
-      ready = undefined;
-      throw error;
-    }));
+  // Tạo collection ở job đầu tiên của từng type thay vì lúc khởi động, để Qdrant chậm
+  // hay lỗi không làm tiến trình khởi động chậm; lỗi thì job được retry.
+  const ensureReady = lazyEnsureCollections(stores);
 
   return createIndexJobHandler(
-    { embed, store, embeddingModel: embeddingConfig.model, ensureReady },
+    { embed, stores, embeddingModel: embeddingConfig.model, ensureReady },
     loadRetryPolicy(env),
     log,
   );

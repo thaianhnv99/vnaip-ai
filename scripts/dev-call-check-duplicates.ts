@@ -27,7 +27,8 @@ async function main() {
   const input = inputPath
     ? JSON.parse(await (await import('node:fs/promises')).readFile(inputPath, 'utf8'))
     : {
-        type: 'solution',
+        // Một trong: ideas, solutions, initiatives. Chỉ so với sáng kiến cùng type.
+        type: 'solutions',
         title: 'Giải pháp quản lý hồ sơ số hóa',
         content: 'Một hệ thống số hóa và quản lý hồ sơ cho đơn vị hành chính.',
       };

@@ -23,9 +23,12 @@ import type { ReplayGuard } from "./replay-guard.js";
  * hạn 1MB áp dụng cho cả request, không theo từng phần tử; mảng được kiểm tra
  * trọn vẹn trước khi enqueue phần tử nào.
  *
- * Không có tenant: mọi sáng kiến vào chung một tập dữ liệu (bỏ `datasetKey`,
- * 2026-11-04). Route chỉ đẩy job vào hàng đợi rồi trả 202; việc index do worker
- * (tiến trình riêng) làm, nên tiến trình web không cần khoá OpenRouter/Qdrant.
+ * Không có tenant (bỏ `datasetKey`, 2026-11-04), nhưng dữ liệu được tách theo `type`:
+ * mỗi type (ideas / solutions / initiatives) nằm ở một collection Qdrant riêng.
+ * `type` không hợp lệ bị từ chối 400 ở `parseIndexEvents` TRƯỚC khi có job nào vào
+ * hàng đợi (cả mảng bị từ chối nếu một phần tử sai). Route chỉ đẩy job vào hàng đợi
+ * rồi trả 202; việc chọn collection theo `job.type` và index do worker (tiến trình
+ * riêng) làm, nên tiến trình web không cần khoá OpenRouter/Qdrant.
  */
 
 export const WEBHOOK_IDEA_APPROVED_PATH = "/webhooks/idea-approved";

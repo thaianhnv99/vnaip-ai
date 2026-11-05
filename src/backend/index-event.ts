@@ -1,10 +1,18 @@
+import { isRecordType, RECORD_TYPES_LABEL, type RecordType } from "./record-type.js";
+
 /**
  * Hợp đồng của event "sáng kiến được duyệt" mà VNAIP BE gửi vào webhook.
  *
- * - Không còn `datasetKey` (quyết định 2026-11-04): mọi sáng kiến nằm chung một
- *   tập dữ liệu. Nếu BE vẫn gửi trường này thì nó bị bỏ qua như mọi trường lạ.
+ * - `type` bắt buộc và phải là MỘT trong `ideas` / `solutions` / `initiatives`
+ *   (khớp từng ký tự, xem record-type.ts). Giá trị khác bị từ chối ngay ở đây (400),
+ *   trước khi có job nào được đẩy vào hàng đợi; type quyết định collection Qdrant mà
+ *   worker ghi sáng kiến vào.
+ * - Không còn `datasetKey` (quyết định 2026-11-04): không tách dữ liệu theo workspace.
+ *   Nếu BE vẫn gửi trường này thì nó bị bỏ qua như mọi trường lạ.
  * - `id` là khoá định danh sáng kiến và phải duy nhất trong toàn VNAIP: gửi lại
- *   cùng `id` là cập nhật sáng kiến đó, không tạo bản mới.
+ *   cùng `id` CÙNG `type` là cập nhật sáng kiến đó, không tạo bản mới. Gửi lại cùng
+ *   `id` với `type` khác thì tạo bản thứ hai ở collection của type mới; bản cũ ở
+ *   collection của type cũ không bị xoá.
  * - `fileRef` là tham chiếu tới file trong MinIO của VNAIP. #TODO: VNAIP chưa có
  *   MinIO nên định dạng của nó (khoá object, bucket, URL?) chưa được chốt; tạm
  *   nhận chuỗi hoặc object nhỏ, mang theo trong job và bỏ qua ở worker.
@@ -15,7 +23,6 @@
  */
 
 export const MAX_ID_LENGTH = 200;
-export const MAX_TYPE_LENGTH = 50;
 export const MAX_TITLE_LENGTH = 300;
 export const MAX_CONTENT_LENGTH = 200_000;
 export const MAX_METADATA_BYTES = 10_000;
@@ -29,7 +36,7 @@ export const MAX_BATCH_SIZE = 50;
 
 export interface IndexEvent {
   ideaId: string;
-  type: string;
+  type: RecordType;
   title: string;
   content: string;
   metadata: Record<string, unknown>;
@@ -96,7 +103,12 @@ export function parseIndexEvent(body: unknown): IndexEvent {
   }
 
   const ideaId = requireString(body, "id", MAX_ID_LENGTH);
-  const type = requireString(body, "type", MAX_TYPE_LENGTH);
+  // Khớp chính xác, không trim hay đổi hoa/thường: "Ideas" hay "idea" là sai type chứ
+  // không phải lỗi gõ để đoán. Thông báo nêu các giá trị hợp lệ, không lặp lại giá trị gửi.
+  const type = body.type;
+  if (!isRecordType(type)) {
+    throw new IndexEventError(`Trường type bắt buộc và phải là một trong: ${RECORD_TYPES_LABEL}`);
+  }
   const title = requireString(body, "title", MAX_TITLE_LENGTH);
   const content = requireString(body, "content", MAX_CONTENT_LENGTH);
 

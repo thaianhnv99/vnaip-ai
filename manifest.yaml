@@ -13,9 +13,10 @@ contributes:
   tools:
     - name: check-duplicates
       description: >-
-        Kiểm tra mức độ tương đồng giữa một hồ sơ đầu vào (ví dụ: giải pháp)
-        và toàn bộ các sáng kiến cùng loại đã được duyệt và index trong VNAIP
-        (có thể loại bớt bằng excludeIds). Chỉ dành cho service account của
+        Kiểm tra mức độ tương đồng giữa một hồ sơ đầu vào (type là ideas,
+        solutions hoặc initiatives) và toàn bộ các sáng kiến CÙNG type đã được
+        duyệt và index trong VNAIP (có thể loại bớt bằng excludeIds). Không
+        bao giờ so sánh chéo giữa các type. Chỉ dành cho service account của
         VNAIP BE; lời gọi từ người gọi khác bị từ chối (403).
         Trả về tối đa 30 sáng kiến giống nhất đã được model chấm, mỗi mục có
         id, điểm số 0..1 (và percent 0..100) cùng lý do. Gọi tool này trước khi

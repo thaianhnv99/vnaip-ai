@@ -4,9 +4,10 @@ import type { InvocationClaims } from "./sota-auth.js";
 /**
  * Giới hạn AI được gọi tool `check-duplicates`.
  *
- * Từ 2026-11-04 mọi sáng kiến của VNAIP nằm chung một tập dữ liệu, không còn lớp
- * cách ly ở tầng lưu trữ: ai gọi được tool là đọc được (nội dung rút gọn trong
- * prompt, kết quả là id + lý do) mọi sáng kiến. App lại có thể được cài vào nhiều
+ * Từ 2026-11-04 dữ liệu không còn tách theo workspace hay người gọi (chỉ tách theo
+ * `type`: mỗi type một collection, xem vector-store.ts), nên không có lớp cách ly
+ * người gọi ở tầng lưu trữ: ai gọi được tool là đọc được (nội dung rút gọn trong
+ * prompt, kết quả là id + lý do) mọi sáng kiến của type được hỏi. App lại có thể được cài vào nhiều
  * workspace Sota, nên quyền gọi phải được giới hạn ở đây, chỉ dựa trên CLAIMS ĐÃ
  * XÁC THỰC của Core (`sub`, `oid`, `wid`), không bao giờ dựa trên body hay header
  * không ký.

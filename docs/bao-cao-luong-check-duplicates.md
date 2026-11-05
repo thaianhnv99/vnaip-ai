@@ -8,8 +8,9 @@
 
 ## 1. Mục tiêu
 
-Kiểm tra mức độ tương đồng giữa một hồ sơ đầu vào (hiện tại: `type = "solution"`)
-và các hồ sơ ứng viên mà caller được phép truy cập trong hệ thống VNAIP, trả về
+Kiểm tra mức độ tương đồng giữa một hồ sơ đầu vào (`type` là `ideas`, `solutions` hoặc
+`initiatives`) và các hồ sơ ứng viên CÙNG `type` mà caller được phép truy cập trong hệ
+thống VNAIP (mỗi type một collection Qdrant riêng, không so chéo type), trả về
 danh sách ứng viên kèm điểm số tương đồng (0..1) và lý do, để người dùng tránh
 tạo hồ sơ trùng lặp. Tool **không** tự kết luận trùng lặp — caller (model/agent
 gọi tool) chịu trách nhiệm diễn giải điểm số.
