@@ -17,9 +17,18 @@ Editable source lives in `src/`. Generated frontend and backend output lives in 
 
 ## Tool: `check-duplicates`
 
-Kiểm tra mức độ tương đồng giữa một hồ sơ đầu vào và **toàn bộ sáng kiến cùng loại đã
-được duyệt và index trong Qdrant** (hướng A: lấy tất cả ứng viên, không tìm theo
-vector), rồi để model chấm điểm qua OpenRouter. Dữ liệu trong Qdrant do luồng index
+Kiểm tra mức độ tương đồng giữa một hồ sơ đầu vào và các sáng kiến cùng loại đã được duyệt
+và index trong Qdrant, theo ba bước (hướng B: lọc top-k bằng vector rồi để model chấm):
+
+1. **Embed input.** Nội dung hồ sơ được chia đoạn đúng như lúc index rồi embed trong một
+   request (mỗi đoạn kèm tiêu đề).
+2. **Lọc bằng vector.** Qdrant tìm `k` sáng kiến cùng loại gần nhất (mặc định 20,
+   `CHECK_DUPLICATES_TOP_K`). Điểm của một sáng kiến là điểm cao nhất giữa các đoạn của input
+   và các chunk của nó, nên hồ sơ dài không bị pha loãng. `excludeIds` được loại ngay trong
+   truy vấn nên không chiếm chỗ của `k`.
+3. **Chấm điểm.** Model Gemini đọc nội dung đầy đủ của `k` sáng kiến đó và chấm điểm.
+
+Dữ liệu trong Qdrant do luồng index
 (webhook → BullMQ → worker) nạp. `type` là `ideas`, `solutions` hoặc `initiatives`, mỗi
 loại nằm ở một collection riêng (xem [Mô hình dữ liệu](#mô-hình-dữ-liệu-3-collection-theo-type)).
 Xem contract đầy đủ trong:
@@ -27,8 +36,11 @@ Xem contract đầy đủ trong:
 - `src/schemas/dedup-input.schema.json`
 - `src/schemas/dedup-output.schema.json`
 - `src/backend/dedup.ts` (logic nghiệp vụ, framework-neutral, test được độc lập)
-- `src/backend/candidate-source.ts` (đọc Qdrant, gom chunk theo sáng kiến)
-- `src/backend/llm-scorer.ts` (chấm điểm theo batch song song, có deadline)
+- `src/backend/input-embedder.ts` (bước 1: embed input)
+- `src/backend/candidate-source.ts` (bước 2: tìm top-k ở Qdrant, gom chunk theo sáng kiến)
+- `src/backend/llm-scorer.ts` (chấm điểm theo batch song song, có deadline) và
+  `src/backend/scoring-prompt.ts` (system prompt chấm điểm, phân loại quan hệ và trích bằng chứng)
+- `src/backend/title-similarity.ts` (bước 2b: `titleSimilarity` giữa tiêu đề input và tiêu đề ứng viên)
 - `src/backend/caller-policy.ts` (giới hạn ai được gọi tool)
 
 ### Mô hình dữ liệu: 3 collection theo type
@@ -48,8 +60,8 @@ Type được tách ở tầng lưu trữ, không phải đọc hết rồi lọ
   giá trị (phân biệt hoa/thường, số nhiều). Sai thì trả `400 INVALID_EVENT` **trước khi** có
   job nào vào hàng đợi; body dạng mảng thì một phần tử sai làm cả mảng bị từ chối. Worker ghi
   sáng kiến vào collection của `job.type`, và mỗi store từ chối ghi point mang type khác.
-- **Kiểm tra trùng**: chỉ đọc collection của `type` được hỏi; hai collection còn lại không
-  được mở ra, nên không thể so khớp chéo type. `type` ngoài ba giá trị bị `400 INVALID_INPUT`.
+- **Kiểm tra trùng**: chỉ tìm và đọc collection của `type` được hỏi; hai collection còn lại
+  không được mở ra, nên không thể so khớp chéo type. `type` ngoài ba giá trị bị `400 INVALID_INPUT`.
 - **Reindex và xoá** chỉ tác động collection của type: dọn chunk thừa sau khi reindex và xoá
   một sáng kiến đều đi qua store của đúng type.
 - **Cùng `id`, khác `type`** là hai sáng kiến độc lập ở hai collection. Gửi lại một `id` với
@@ -79,6 +91,12 @@ docker run -d --name vnaip-qdrant \
 - Kiểm tra: `curl http://localhost:6333/collections` trả `"status":"ok"`; dashboard ở
   <http://localhost:6333/dashboard>. Dừng/chạy lại bằng `docker stop vnaip-qdrant` /
   `docker start vnaip-qdrant`.
+- Chạy lại `docker run ...` khi container `vnaip-qdrant` đã tồn tại (kể cả đang dừng) báo lỗi:
+  `Error response from daemon: Conflict. The container name "/vnaip-qdrant" is already in use by container`.
+  Dùng `docker start vnaip-qdrant` để chạy lại container cũ (giữ dữ liệu); chỉ xoá bằng
+  `docker rm vnaip-qdrant` khi muốn tạo container mới bằng chính lệnh `docker run` đó, dữ liệu
+  trong volume `vnaip_qdrant_storage` vẫn còn vì volume tách khỏi container.
+- Tìm theo vector dùng Query API `points/query/groups`, nên cần Qdrant **>= 1.11** (đã thử trên 1.20).
 - `http` chỉ được chấp nhận với `localhost`, `127.0.0.1` hoặc `[::1]`. App chạy trong một
   container khác và gọi `http://qdrant:6333` sẽ bị từ chối cấu hình; Qdrant ở host khác phải
   dùng `https` kèm `QDRANT_API_KEY`.
@@ -101,40 +119,135 @@ thực của Core (không bao giờ với body hay header). Đặt nhiều danh 
 
 ### Hành vi cần biết
 
-- **Vượt trần thì báo lỗi, không cắt.** Quá `CHECK_DUPLICATES_CANDIDATE_LIMIT` sáng kiến
-  (mặc định 100, sau khi loại `excludeIds`) hoặc kho vượt giới hạn đọc thì tool trả `503
-  CANDIDATE_LIMIT_EXCEEDED`. Cắt tuỳ ý có thể bỏ sót đúng sáng kiến trùng và trả "không
-  trùng" sai. Chạm trần là tín hiệu chuyển sang hướng B (top-k theo vector; vector đã được lưu sẵn).
+- **Chỉ `k` sáng kiến gần nhất được chấm, nên có thể bỏ sót.** Vector chỉ dùng để rút gọn tập
+  ứng viên (mặc định `k = 20`, `CHECK_DUPLICATES_TOP_K`, tối đa 100). Sáng kiến trùng ý nhưng diễn
+  đạt rất khác input có thể nằm ngoài top-k và model không bao giờ thấy nó, nên kết quả rỗng chỉ
+  có nghĩa là không sáng kiến nào trong nhóm gần nhất bị chấm trùng. `k` nhỏ giảm chi phí và độ
+  trễ (20 sáng kiến là 4 request chấm với batch 5) nhưng tăng nguy cơ này; phân tích rủi ro trong
+  `docs/ke-hoach-phat-trien.md` (mục 10) khuyến nghị `k` rộng hơn (100–200) nếu ưu tiên không bỏ
+  sót. Log `candidates_loaded` có `topScore` và `lastScore` (cosine của sáng kiến gần nhất và xa
+  nhất trong top-k): `lastScore` còn cao nghĩa là top-k đang cắt giữa vùng còn rất giống, nên cân
+  nhắc tăng `k`.
+- **Vector phải cùng model với lúc index.** Web embed input rồi so với vector worker đã lưu, nên
+  web và worker phải dùng cùng `EMBEDDING_MODEL` và `EMBEDDING_DIMENSIONS`. Nếu sáng kiến tìm được
+  do model khác index (vector giả của `scripts/seed-ideas.ts`, hoặc vector cũ trước khi đổi model)
+  thì tool trả `502 CANDIDATES_UNAVAILABLE` thay vì xếp hạng sai, và log `candidates_embedding_model_mismatch`
+  nêu model mong đợi và model đã index. Cách sửa: index lại bằng model hiện hành. Khi
+  `EMBEDDING_MOCK_MODE=true` thì bỏ qua kiểm này.
+- **`503 CANDIDATE_LIMIT_EXCEEDED` chỉ còn khi nội dung của `k` sáng kiến vượt giới hạn đọc**
+  (10000 chunk), gần như không xảy ra. Số sáng kiến trong kho không còn gây lỗi này.
 - **Lỗi một phần là lỗi.** Một batch chấm điểm lỗi hoặc hết giờ thì cả lời gọi trả `502
   SCORING_UNAVAILABLE`; không trả điểm của một phần ứng viên.
+- **Body lỗi có mã truy vết và lý do gốc của lỗi chấm điểm.** Mọi lỗi của tool kèm
+  `requestId` (cùng giá trị header `x-request-id` và field `requestId` trong log
+  `check_duplicates_failed`). Riêng `502 SCORING_UNAVAILABLE` do scorer gây ra còn có `cause`
+  (`BAD_OUTPUT`, `TIMEOUT`, `RATE_LIMITED`, `AUTH_ERROR`, `NETWORK_ERROR`) và `detail` (chỉ các field trong
+  allow-list: `reason`, `finishReason`, `jsonType`, `contentLength`, `topLevelKeyCount`,
+  `expectedCount`, `scoredCount`, và với `reason: "incomplete_scores"` (ngưỡng 0) hoặc
+  `"unusable_scores"` (ngưỡng > 0) là các số đếm nguyên nhân
+  `entryCount`, `malformedCount`, `unknownIdCount`, `duplicateCount`, `percentNotIntegerCount`,
+  `percentOutOfRangeCount`, `relationInvalidCount`, `reasonBlankCount`, `unresolvedCount`). Lỗi tạo embedding cho input (`502
+  EMBEDDING_UNAVAILABLE`) có `cause` (`RATE_LIMITED`, `AUTH_ERROR`, `TIMEOUT`, `NETWORK_ERROR`,
+  `UPSTREAM_ERROR`, `BAD_REQUEST`, `BAD_RESPONSE`, `INVALID_INPUT`) nhưng không có `detail`. Ví dụ output bị cắt:
+  `{"code":"SCORING_UNAVAILABLE","message":"…","requestId":"…","cause":"BAD_OUTPUT","detail":{"reason":"truncated","finishReason":"length","contentLength":371}}`.
+  Không bao giờ có nội dung model sinh, nội dung hồ sơ hay message gốc của provider; những thứ
+  đó không ra khỏi app. Lỗi lấy ứng viên (`CANDIDATES_UNAVAILABLE`) chỉ có `requestId`.
 - **Chỉ so sánh sáng kiến cùng `type`** với input (`ideas`, `solutions` hoặc `initiatives`),
-  đọc từ collection riêng của type đó. Trần `CHECK_DUPLICATES_CANDIDATE_LIMIT` và giới hạn đọc
-  tính theo từng type, không cộng dồn các type.
+  tìm trong collection riêng của type đó. `k` và giới hạn đọc tính theo từng type, không cộng
+  dồn các type.
 - Nội dung mỗi ứng viên đưa vào prompt bị cắt ở `LLM_SCORER_MAX_CANDIDATE_CHARS` (4000 ký tự).
-- `parentSolutionId` được chấp nhận nhưng chưa dùng để lọc (vai trò chưa được nghiệp vụ xác nhận).
+- **Mỗi mục kết quả có `relation` và `evidence`.** `relation` là một trong `copy`, `paraphrase`,
+  `same_problem`, `same_solution_other_scope`, `extension`, `unrelated`. `evidence` là hai đoạn
+  trích (`newQuote`, `candidateQuote`, tối đa 200 ký tự). App tự kiểm từng đoạn có nguyên văn trong
+  dữ liệu đã đưa cho model (sau khi gộp khoảng trắng, phân biệt hoa/thường); đoạn bịa hoặc bị sửa chữ
+  thành chuỗi rỗng. Model chỉ được yêu cầu trích khi điểm từ 40 trở lên.
+- **Ngưỡng điểm `CHECK_DUPLICATES_MIN_SCORE` (mặc định 40).** Chỉ sáng kiến có `percent` từ ngưỡng
+  trở lên được trả về, nên kết quả có thể rỗng. Ngưỡng cũng được đưa cho model (`{{MIN_SCORE}}`
+  trong prompt) để nó không liệt kê ứng viên dưới ngưỡng, nên khi ngưỡng > 0 app **không thể phát hiện
+  model bỏ sót một ứng viên** (vắng mặt nghĩa là dưới ngưỡng); mục hỏng gắn với ứng viên nào đó vẫn là
+  `BAD_OUTPUT` cho cả lời gọi. **VNAIP BE đang hiển thị "top 5 để tham khảo" cả khi không match nào đạt 50**
+  (`docs/vnaip-be-enrich-ket-qua-check-duplicates.md` mục 4): với ngưỡng 40, danh sách đó chỉ còn các
+  match từ 40 trở lên. Đặt `CHECK_DUPLICATES_MIN_SCORE=0` để giữ hành vi cũ (model liệt kê mọi ứng
+  viên, app kiểm đủ từng ứng viên như trước).
+- **`parentSolutionId` được dùng để chấm, không để lọc.** Ứng viên có đúng id đó vẫn được gửi cho model;
+  kết quả của nó bị app ép `relation = "extension"` và `percent <= 30` (quy tắc 6 của prompt, áp lại
+  vì không tin model), nên với ngưỡng 40 nó không xuất hiện trong kết quả.
+- **`fileExcerpts` (tuỳ chọn, tối đa 10 đoạn, mỗi đoạn 1..2000 ký tự)** chỉ được đưa cho model và làm
+  căn cứ cho `newQuote`; không dùng để tìm sáng kiến gần nhất, vì file đính kèm của sáng kiến đã
+  duyệt cũng chưa được index (đang chờ MinIO).
+- **Model nhận thêm `matchedChunks`, `contentSimilarity`, `titleSimilarity` cho mỗi ứng viên.**
+  `matchedChunks` là tối đa 3 đoạn khớp vector nhất (mỗi đoạn cắt ở 1000 ký tự); `contentSimilarity`
+  là cosine của đoạn gần nhất (đã gồm tiêu đề vì mỗi chunk được embed cùng tiêu đề). `titleSimilarity`
+  cần **thêm một request embedding** mỗi lần kiểm tra (tiêu đề input và các tiêu đề ứng viên, một batch)
+  và chỉ là gợi ý: lỗi hoặc chậm quá 3 giây thì bỏ qua gợi ý này (log `title_similarity_unavailable`),
+  không làm lời gọi thất bại.
+- **Độ trễ và chi phí chấm điểm tăng so với prompt cũ:** mỗi mục kết quả giờ có thêm `relation` và hai
+  đoạn trích (trần output mỗi ứng viên 500 token thay vì 250) và input có thêm `matchedChunks`. Đo lại
+  thời gian với model thật (`scripts/check-gemini.ts`) trước khi tin ngân sách 28 giây.
 - Input dùng `excludeIds` (mảng); `excludeId` và `datasetKey` bị từ chối (400): BE phải đổi.
 
 ### Cấu hình
 
 Copy `.env.example` thành `.env` và chỉnh các biến. Tiến trình **web** cần cấu hình Qdrant
-(cùng Qdrant và cùng `QDRANT_COLLECTION_PREFIX` với worker), `OPENROUTER_API_KEY`,
-`LLM_SCORER_MODEL` và danh sách người gọi. Biến chính của tool:
+(cùng Qdrant và cùng `QDRANT_COLLECTION_PREFIX` với worker), `GEMINI_API_KEY` (embed input và
+chấm điểm), cùng `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` với worker, `LLM_SCORER_MODEL` và
+danh sách người gọi. Biến chính của tool:
 
 | Biến | Mô tả |
 | --- | --- |
 | `CHECK_DUPLICATES_ALLOWED_SUBS`, `_OIDS`, `_WIDS` | Danh sách claim được phép gọi tool (phân tách bằng dấu phẩy, AND giữa các danh sách). Không đặt danh sách nào thì 403 cho tất cả. |
-| `CHECK_DUPLICATES_CANDIDATE_LIMIT` | Trần số sáng kiến gửi cho model (mặc định 100, tối đa 500). |
-| `CHECK_DUPLICATES_DEADLINE_MS` | Tổng thời gian cho cả lời gọi (mặc định 28000, nhỏ hơn `timeoutMs` 30000 của tool). |
-| `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL` | Khoá và base URL OpenRouter, dùng chung với embedding. |
-| `LLM_SCORER_MODEL` | Model chấm điểm. **Không có mặc định.** Chưa chốt model cho Staging/production: đã đo `claude-haiku-5.5` đạt mốc 15 giây, các model `:free` thì không (xem `docs/ke-hoach-phat-trien.md`, quyết định #15). |
-| `LLM_SCORER_BATCH_SIZE`, `LLM_SCORER_CONCURRENCY`, `LLM_SCORER_TIMEOUT_MS`, `LLM_SCORER_MAX_CANDIDATE_CHARS` | Số ứng viên mỗi lần gọi (5), số lần gọi song song (20), trần thời gian mỗi lần (25000ms), phần nội dung tối đa mỗi ứng viên (4000 ký tự). |
+| `CHECK_DUPLICATES_TOP_K` | `k` của top-k: số sáng kiến gần input nhất được gửi cho model chấm (mặc định 20, tối đa 100). Thay cho `CHECK_DUPLICATES_CANDIDATE_LIMIT`, biến cũ đó không còn được đọc. |
+| `CHECK_DUPLICATES_MIN_SCORE` | Ngưỡng điểm 0..100: chỉ sáng kiến có `percent` từ ngưỡng trở lên được trả về và được đưa cho model (mặc định 40; 0 = trả mọi sáng kiến đã chấm). Giá trị sai rơi về 40. Xem "Hành vi cần biết". |
+| `CHECK_DUPLICATES_DEADLINE_MS` | Tổng thời gian cho cả lời gọi: embed + tìm + chấm (mặc định 28000, nhỏ hơn `timeoutMs` 30000 của tool). |
+| `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` | Model và số chiều embedding (mặc định `gemini-embedding-001`, 1536). **Phải trùng với worker**: web embed input rồi so với vector worker đã lưu. |
+| `GEMINI_API_KEY` | Khoá Gemini API, dùng chung cho scorer và embedding. `OPENROUTER_*` và `GEMINI_BASE_URL` không còn được đọc. |
+| `EMBEDDING_BASE_URL` | Tuỳ chọn: base URL của embedding (mặc định `https://generativelanguage.googleapis.com/v1beta`, API gốc của Gemini). Khác base URL của scorer. |
+| `LLM_SCORER_BASE_URL`, `LLM_SCORER_API_KEY` | Tuỳ chọn: khoá/endpoint riêng cho scorer, không ảnh hưởng embedding. Hạn mức free tier tính theo project chứ không theo khoá, nên khoá của project khác có hạn mức riêng. Không đặt thì dùng `GEMINI_*`. Đã đặt `LLM_SCORER_BASE_URL` thì bắt buộc đặt `LLM_SCORER_API_KEY`: `GEMINI_API_KEY` không bao giờ được gửi sang host khác. |
+| `LLM_SCORER_REASONING_EFFORT` | Tuỳ chọn: `none`, `minimal`, `low`, `medium` hoặc `high`, gửi làm `reasoning_effort`. Không đặt thì không gửi. Dùng khi model reasoning ăn hết `max_tokens` làm output bị cắt. Giá trị sai thì tool trả `503 TOOL_NOT_CONFIGURED`. |
+| `LLM_SCORER_MODEL` | Model chấm điểm (tên Gemini, ví dụ `gemini-3.6-flash`; `gemini-2.5-flash` đã bị Google gỡ khỏi người dùng mới, gọi trả HTTP 404). **Không có mặc định.** Chưa đo thời gian với Gemini: chạy `npx tsx scripts/check-gemini.ts` (xem [Chuyển sang Gemini](#chuyển-sang-gemini-free-tier)). |
+| `LLM_SCORER_BATCH_SIZE`, `LLM_SCORER_CONCURRENCY`, `LLM_SCORER_TIMEOUT_MS`, `LLM_SCORER_MAX_CANDIDATE_CHARS` | Số ứng viên mỗi lần gọi (5), số lần gọi song song (20), trần thời gian mỗi lần (25000ms), phần nội dung tối đa mỗi ứng viên (4000 ký tự). Mặc định đo với model khác; với free tier cần chỉnh theo hạn mức (xem bên dưới). |
 | `QDRANT_URL` | URL REST của Qdrant, ví dụ `http://localhost:6333` (Docker local). |
 | `QDRANT_COLLECTION_PREFIX` | Tiền tố của ba collection `<tiền tố>_ideas`, `_solutions`, `_initiatives`. Mỗi môi trường một tiền tố. Thay `QDRANT_COLLECTION`. |
 | `QDRANT_API_KEY` | Không cần với Qdrant local. Chỉ bắt buộc khi `QDRANT_URL` không phải localhost (và phải `https`). |
 | `LLM_MOCK_MODE`, `QDRANT_MOCK_MODE` | `true` dùng scorer mock / kho trong bộ nhớ (ba kho theo type, rỗng, không chia sẻ với worker). Không đặt nghĩa là dùng dịch vụ thật. |
 
-Không commit giá trị thật của `OPENROUTER_API_KEY`, `QDRANT_API_KEY` (nếu có dùng),
-`WEBHOOK_HMAC_SECRETS`.
+Không commit giá trị thật của `GEMINI_API_KEY`, `LLM_SCORER_API_KEY`, `QDRANT_API_KEY` (nếu
+có dùng), `WEBHOOK_HMAC_SECRETS`.
+
+### Chuyển sang Gemini (free tier)
+
+Scorer và embedding dùng chung `GEMINI_API_KEY` nhưng đi qua hai endpoint khác nhau: scorer gọi endpoint
+tương thích OpenAI (`/v1beta/openai/chat/completions`), embedding gọi API gốc
+(`/v1beta/models/{model}:batchEmbedContents`, khoá ở header `x-goog-api-key`).
+Các điều cần biết khi dùng free tier và khi đổi từ OpenRouter:
+
+1. **Kiểm thử bằng khoá thật trước khi deploy:** `npx tsx scripts/check-gemini.ts` (thêm
+   `--burst=10` để thử hạn mức). Script gọi đúng code production và kiểm: khoá hợp lệ, model có
+   trong danh sách, chat nhận `response_format`/`max_tokens`/`reasoning_effort`, API gốc nhận
+   `outputDimensionality` ở cấp trên cùng của request (thử cả `embedContentConfig.outputDimensionality`,
+   cách này bị API bỏ qua âm thầm và vẫn trả 3072 chiều). Nó chỉ in mã HTTP, tên model, số chiều và thời gian, không in khoá hay body.
+2. **Hạn mức free tier thấp và tính theo project.** Mỗi lần check dùng
+   `ceil(số ứng viên / LLM_SCORER_BATCH_SIZE)` request; mặc định batch 5 là 20 request cho 100
+   ứng viên và dễ trả `429`. Khi đó response có `cause: "RATE_LIMITED"`. Tăng
+   `LLM_SCORER_BATCH_SIZE` và giảm `LLM_SCORER_CONCURRENCY` cho khớp hạn mức trong AI Studio; batch
+   lớn thì mỗi lần gọi chậm hơn nên phải đo lại với `CHECK_DUPLICATES_DEADLINE_MS`.
+3. **Thinking bật mặc định** và token suy nghĩ có thể làm output bị cắt
+   (`cause: "BAD_OUTPUT"`, `detail.reason: "truncated"`). Đặt `LLM_SCORER_REASONING_EFFORT=none`
+   (2.5 Flash cho phép; 2.5 Pro và dòng 3 không tắt được).
+4. **Embedding:** `gemini-embedding-001` mặc định 3072 chiều, app gửi `outputDimensionality: 1536` để
+   khớp collection Qdrant hiện có (không phải tạo lại collection), và tự chuẩn hoá L2 vector vì
+   Gemini không chuẩn hoá khi cắt khỏi 3072 chiều. App dùng `:batchEmbedContents` (một request cho
+   cả batch chunk) thay vì `:embedContent` từng chunk để tiết kiệm hạn mức request. Vector đã index bằng
+   `text-embedding-3-small` vẫn nằm trong collection nhưng **không so sánh được** với vector mới.
+   Vì tool `check-duplicates` tìm theo vector (hướng B), vector cũ phải được index lại bằng model
+   hiện hành (VNAIP BE gửi lại sự kiện, hoặc `scripts/seed-ideas.ts` với khoá Gemini thật); nếu không
+   tool trả `502 CANDIDATES_UNAVAILABLE` thay vì xếp hạng sai (xem "Hành vi cần biết").
+5. **Dữ liệu gửi cho Google:** nội dung sáng kiến được gửi tới Gemini API. Điều khoản của free tier
+   khác bản trả phí về việc Google có dùng dữ liệu để cải thiện sản phẩm hay không; đọc điều khoản
+   hiện hành trước khi dùng dữ liệu thật.
+6. **Đổi env ở nơi deploy:** thay `OPENROUTER_API_KEY` bằng `GEMINI_API_KEY` (và đặt
+   `LLM_SCORER_MODEL` kiểu Gemini) cho cả web lẫn worker. Thiếu thì tool trả
+   `503 TOOL_NOT_CONFIGURED`, worker báo `NOT_CONFIGURED`.
 
 ### Chạy local
 
@@ -204,8 +317,11 @@ Các test chính của luồng kiểm tra trùng (xem `src/backend/__tests__/`):
 - `index-job.test.ts`, `webhook-routes.test.ts`, `index-event.test.ts`: webhook từ chối type
   sai (cả theo mảng) trước khi enqueue, worker ghi/reindex/xoá đúng collection, job type cũ
   vào hàng chờ lỗi không retry.
-- `llm-scorer.test.ts`: URL OpenRouter giữ `/api/v1`, batch song song, giới hạn đồng thời,
-  deadline, một batch lỗi thì cả lời gọi lỗi, không lộ khoá API.
+- `llm-scorer.test.ts`: URL base giữ nguyên đường dẫn, batch song song, giới hạn đồng thời,
+  deadline, một batch lỗi thì cả lời gọi lỗi, không lộ khoá API; prompt có `MIN_SCORE` đúng và
+  message user mang đủ `newIdea`/`candidates`; phủ batch khác nhau theo ngưỡng (0 và > 0).
+- `dedup.test.ts`, `title-similarity.test.ts`: ngưỡng điểm, ép `extension` cho `parentSolutionId`,
+  kiểm chứng đoạn trích, `titleSimilarity` (lỗi/chậm/sai độ dài thì bỏ qua gợi ý).
 - `caller-policy.test.ts`, `check-duplicates-http.test.ts`: giới hạn người gọi, qua cả chuỗi
   Express thật + xác thực JWT thật (JWKS giả); claims không khớp bị 403, danh tính khai
   trong body/header không có tác dụng.
@@ -225,8 +341,11 @@ Xem `docs/ke-hoach-phat-trien.md` (GĐ0 còn hai mục, GĐ3, GĐ4, GĐ5). Tóm 
    deploy Staging với `LOG_VERIFIED_CLAIMS=true`, cho BE gọi tool một lần, đọc log
    `invocation_accepted`. Cho tới khi đặt danh sách, tool trả 403.
 2. Chọn model chấm điểm (`LLM_SCORER_MODEL`) và đo thời gian trả lời với dữ liệu thật.
-3. Vai trò của `parentSolutionId`, ngưỡng hiển thị và số kết quả tối đa theo nghiệp vụ thật.
+3. Ngưỡng hiển thị và số kết quả tối đa theo nghiệp vụ thật (hiện: ngưỡng 40, tối đa 30). Vai trò của
+   `parentSolutionId` đã theo prompt chấm điểm (không báo trùng, `extension`, tối đa 30); VNAIP BE
+   cần xác nhận cách dùng `relation`/`evidence` và danh sách "top 5 tham khảo" khi có ngưỡng.
    (Danh sách `type` đã chốt là `ideas` / `solutions` / `initiatives`; VNAIP BE phải gửi đúng
    các giá trị này.)
 4. `timeoutMs` tối đa khi build artifact (schema chỉ ràng buộc `minimum: 1`).
-5. Trần số ứng viên và ngưỡng chuyển sang hướng B khi số sáng kiến tăng.
+5. Giá trị `k` phù hợp (mặc định 20) và có cần ngưỡng similarity hay không: đo recall (tỉ lệ
+   sáng kiến trùng thật nằm trong top-k) bằng dữ liệu và model thật.

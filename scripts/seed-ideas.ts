@@ -13,8 +13,9 @@
  * khỏi đúng collection đó.
  *
  * Cấu hình đọc từ .env như server: QDRANT_URL, QDRANT_COLLECTION_PREFIX (Qdrant local
- * bằng Docker không cần API key), và OPENROUTER_API_KEY (hoặc EMBEDDING_MOCK_MODE=true:
- * hướng A không dùng vector khi truy vấn nên vector giả đủ để thử luồng kiểm tra trùng).
+ * bằng Docker không cần API key), và GEMINI_API_KEY (hoặc EMBEDDING_MOCK_MODE=true:
+ * vector giả chỉ dùng được khi tool kiểm tra trùng cũng chạy EMBEDDING_MOCK_MODE=true; với
+ * embedding thật, tool từ chối sáng kiến mang nhãn "mock-embedding" vì vector không so sánh được).
  *
  * An toàn:
  * - `--collection-prefix` bắt buộc và phải TRÙNG `QDRANT_COLLECTION_PREFIX`: chống nạp
@@ -30,7 +31,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseIndexEvent } from '../src/backend/index-event.js';
 import { processIndexJob, type IndexJob } from '../src/backend/index-job.js';
-import { createEmbedderFromEnv, loadEmbeddingConfig } from '../src/backend/openrouter-embeddings.js';
+import { createEmbedderFromEnv, loadEmbeddingConfig } from '../src/backend/embeddings.js';
 import { createVectorStoresFromEnv, loadQdrantConfig } from '../src/backend/qdrant-store.js';
 import { RECORD_TYPES, type RecordType } from '../src/backend/record-type.js';
 import { lazyEnsureCollections } from '../src/backend/vector-store.js';

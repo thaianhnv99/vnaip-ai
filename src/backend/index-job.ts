@@ -1,5 +1,5 @@
 import { chunkText, DEFAULT_CHUNK_CHARS } from "./chunker.js";
-import type { Embedder } from "./openrouter-embeddings.js";
+import { embeddingText, type Embedder } from "./embeddings.js";
 import { pointId, type VectorPoint, type VectorStores } from "./vector-store.js";
 import type { RecordType } from "./record-type.js";
 import type { JobHandler, JobOutcome, RetryPolicy } from "./job-queue.js";
@@ -87,9 +87,10 @@ export async function processIndexJob(
 
   await deps.ensureReady?.(job.type);
 
-  // Mỗi vector mang cả tiêu đề để chunk nào cũng giữ ngữ cảnh của sáng kiến.
+  // Mỗi vector mang cả tiêu đề để chunk nào cũng giữ ngữ cảnh của sáng kiến. Cùng định
+  // dạng với vector truy vấn của luồng kiểm tra trùng (embeddingText).
   const vectors = await deps.embed(
-    chunks.map((chunk) => `${job.title}\n\n${chunk}`),
+    chunks.map((chunk) => embeddingText(job.title, chunk)),
   );
 
   const indexedAt = (deps.now?.() ?? new Date()).toISOString();
@@ -156,6 +157,9 @@ export function createIndexJobHandler(
       log("error", "index_job_failed", {
         ...base,
         errorCode: (error as { code?: string }).code ?? "UNKNOWN",
+        // message không bao giờ chứa nội dung sáng kiến hay API key (xem embeddings.ts,
+        // qdrant-store.ts); cần để phân biệt các nguyên nhân BAD_RESPONSE khác nhau.
+        errorMessage: error instanceof Error ? error.message : String(error),
         outcome: outcome.status,
         durationMs: Math.round(performance.now() - startedAt),
       });

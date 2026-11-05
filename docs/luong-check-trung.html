@@ -1,0 +1,304 @@
+<title>Luồng check trùng vnaip-dedup</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* layout: sơ đồ 2 cột (request path dọc bên trái, indexing path song song bên phải) nối bằng 1 mũi tên ngang ở Qdrant; bảng số liệu dưới cùng */
+:root{
+  --bg:#faf8f5; --panel:#ffffff; --ink:#1c1a17; --muted:#6b6358;
+  --line:#ddd6cb; --accent:#b4502a; --accent-soft:#f1ded3;
+  --ok:#3d6b4f; --warn:#a6771f; --bad:#a3342a;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#17140f; --panel:#221d16; --ink:#f1ebe0; --muted:#a79a85;
+    --line:#3a332a; --accent:#e08a5f; --accent-soft:#3a2c22;
+    --ok:#7fbf98; --warn:#d9ab5a; --bad:#e3756a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#17140f; --panel:#221d16; --ink:#f1ebe0; --muted:#a79a85;
+  --line:#3a332a; --accent:#e08a5f; --accent-soft:#3a2c22;
+  --ok:#7fbf98; --warn:#d9ab5a; --bad:#e3756a;
+  color-scheme: dark;
+}
+*{box-sizing:border-box}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family: 'Source Serif 4', Georgia, serif;
+  padding-left:max(16px, env(safe-area-inset-left,0px));
+  padding-right:max(16px, env(safe-area-inset-right,0px));
+}
+.wrap{ max-width: 980px; margin: 0 auto; padding-block: 28px 56px; display:flex; flex-direction:column; gap:28px; }
+h1{
+  font-family:'Fraunces', Georgia, serif; font-weight:600; font-size: clamp(1.5rem, 3.2vw, 2.1rem);
+  margin:0; text-wrap:balance; letter-spacing:-0.01em;
+}
+.sub{ color:var(--muted); font-size:0.95rem; max-width:65ch; line-height:1.5; margin-top:6px; }
+.legend{ display:flex; gap:18px; flex-wrap:wrap; font-family:var(--mono); font-size:0.72rem; color:var(--muted); letter-spacing:0.02em; }
+.legend span{ display:inline-flex; align-items:center; gap:6px; }
+.dot{ width:9px; height:9px; border-radius:50%; display:inline-block; }
+.d-main{ background:var(--accent); }
+.d-ok{ background:var(--ok); }
+.d-bad{ background:var(--bad); }
+
+figure{ margin:0; }
+figcaption{ font-size:0.8rem; color:var(--muted); margin-top:10px; max-width:70ch; line-height:1.5; }
+svg{ max-width:100%; height:auto; display:block; }
+svg text{ font-family: var(--mono); }
+
+section{ display:flex; flex-direction:column; gap:10px; }
+.section-head{ display:flex; align-items:baseline; gap:10px; }
+.eyebrow{ font-family:var(--mono); font-size:0.72rem; letter-spacing:0.08em; text-transform:uppercase; color:var(--accent); }
+h2{ font-family:'Fraunces', Georgia, serif; font-size:1.2rem; font-weight:600; margin:0; }
+
+.grid-constants{
+  display:grid; grid-template-columns: repeat(auto-fill, minmax(190px,1fr)); gap:1px;
+  background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden;
+}
+.cell{ background:var(--panel); padding:14px 16px; min-width:0; }
+.cell .val{ font-family:var(--mono); font-size:1.15rem; font-weight:600; color:var(--accent); font-variant-numeric:tabular-nums; }
+.cell .lbl{ font-size:0.78rem; color:var(--muted); margin-top:3px; line-height:1.4; }
+.cell .loc{ font-family:var(--mono); font-size:0.68rem; color:var(--muted); margin-top:6px; opacity:0.75; }
+
+table{ width:100%; border-collapse:collapse; font-size:0.85rem; }
+thead th{ text-align:left; font-family:var(--mono); font-size:0.7rem; letter-spacing:0.04em; text-transform:uppercase; color:var(--muted); font-weight:500; padding:8px 10px; border-bottom:1px solid var(--line); }
+tbody td{ padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+tbody tr:last-child td{ border-bottom:none; }
+code{ font-family:var(--mono); font-size:0.85em; background:var(--accent-soft); padding:1px 5px; border-radius:4px; }
+.status{ font-family:var(--mono); font-weight:600; font-variant-numeric:tabular-nums; }
+.s4{ color:var(--warn); } .s5{ color:var(--bad); } .s2{color:var(--ok);}
+.table-wrap{ overflow-x:auto; border:1px solid var(--line); border-radius:10px; }
+.table-wrap table{ min-width:560px; }
+.table-wrap td, .table-wrap th{ padding-left:14px; }
+
+.callout{ background:var(--accent-soft); border-radius:10px; padding:14px 16px; font-size:0.88rem; line-height:1.55; }
+.callout b{ color:var(--accent); }
+footer{ font-family:var(--mono); font-size:0.72rem; color:var(--muted); border-top:1px solid var(--line); padding-top:14px; }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<div class="wrap">
+  <header>
+    <h1>Luồng check trùng — vnaip-dedup</h1>
+    <p class="sub">POST /tools/check-duplicates, từ xác thực tới phán quyết cuối. Luồng index chạy song song, hoàn toàn tách biệt.</p>
+    <div class="legend" style="margin-top:14px">
+      <span><span class="dot d-main"></span>đường request chính</span>
+      <span><span class="dot d-ok"></span>đường index (bất đồng bộ)</span>
+      <span><span class="dot d-bad"></span>lỗi fail-closed</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="section-head"><span class="eyebrow">01</span><h2>Hai luồng, không chờ nhau</h2></div>
+    <figure>
+      <svg viewBox="0 0 940 620" role="img" aria-label="Luồng request check-duplicates chạy đồng bộ từ xác thực tới phán quyết LLM; luồng index chạy song song qua webhook và worker riêng, chỉ gặp nhau tại Qdrant">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+          </marker>
+          <marker id="arrowOk" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--ok)"/>
+          </marker>
+        </defs>
+
+        <!-- column labels -->
+        <text x="210" y="24" text-anchor="middle" font-size="11" letter-spacing="1.5" fill="var(--accent)" font-weight="600">CHECK-DUPLICATES (ĐỒNG BỘ)</text>
+        <text x="760" y="24" text-anchor="middle" font-size="11" letter-spacing="1.5" fill="var(--ok)" font-weight="600">INDEX IDEA (BẤT ĐỒNG BỘ)</text>
+
+        <!-- REQUEST PATH BOXES -->
+        <!-- 1 Auth -->
+        <rect x="70" y="42" width="280" height="44" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <text x="90" y="59" font-size="12" font-weight="600">1. JWT invocation + caller-policy</text>
+        <text x="90" y="75" font-size="10.5" fill="var(--muted)">scp ⊇ tool:check-duplicates · sub/oid/wid whitelist</text>
+
+        <line x1="210" y1="86" x2="210" y2="108" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+        <!-- 2 validate input -->
+        <rect x="70" y="110" width="280" height="40" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <text x="90" y="134" font-size="12" font-weight="600">2. Validate input (schema)</text>
+
+        <line x1="210" y1="150" x2="210" y2="172" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+        <!-- 3 embed -->
+        <rect x="70" y="174" width="280" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <text x="90" y="194" font-size="12" font-weight="600">3. Embed input</text>
+        <text x="90" y="211" font-size="10.5" fill="var(--muted)">chunk 2000c · title+chunk · Gemini 1536d</text>
+
+        <line x1="210" y1="222" x2="210" y2="244" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+        <!-- 4 qdrant search -->
+        <rect x="70" y="246" width="280" height="56" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.6"/>
+        <text x="90" y="266" font-size="12" font-weight="700" fill="var(--accent)">4. Qdrant — tìm candidate</text>
+        <text x="90" y="282" font-size="10.5" fill="var(--muted)">collection theo type · group-by ideaId</text>
+        <text x="90" y="296" font-size="10.5" fill="var(--muted)">topK=20 · excludeIds trong query</text>
+
+        <!-- bridge to index column -->
+        <line x1="350" y1="274" x2="620" y2="274" stroke="var(--ok)" stroke-width="1.6" stroke-dasharray="2 5" marker-end="url(#arrowOk)"/>
+        <text x="485" y="265" text-anchor="middle" font-size="10" fill="var(--ok)">điểm gặp duy nhất</text>
+
+        <line x1="210" y1="302" x2="210" y2="324" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+        <text x="300" y="320" font-size="10" fill="var(--bad)" text-anchor="end">0 candidate → trả []</text>
+
+        <!-- 5 title similarity (optional) -->
+        <rect x="70" y="326" width="280" height="44" rx="8" fill="none" stroke="var(--line)" stroke-width="1.4" stroke-dasharray="3 4"/>
+        <text x="90" y="344" font-size="12" font-weight="600">5. Title similarity (phụ)</text>
+        <text x="90" y="360" font-size="10.5" fill="var(--muted)">ngân sách 3s · lỗi → bỏ qua lặng lẽ</text>
+
+        <line x1="210" y1="370" x2="210" y2="392" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+        <!-- 6 LLM scoring -->
+        <rect x="70" y="394" width="280" height="60" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.6"/>
+        <text x="90" y="414" font-size="12" font-weight="700" fill="var(--accent)">6. LLM scoring</text>
+        <text x="90" y="430" font-size="10.5" fill="var(--muted)">batch 5 · 20 lane song song</text>
+        <text x="90" y="444" font-size="10.5" fill="var(--muted)">1 batch lỗi → huỷ cả lô (AbortController)</text>
+
+        <line x1="210" y1="454" x2="210" y2="476" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+        <!-- 7 postprocess -->
+        <rect x="70" y="478" width="280" height="56" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <text x="90" y="498" font-size="12" font-weight="600">7. Lọc + chuẩn hoá</text>
+        <text x="90" y="514" font-size="10.5" fill="var(--muted)">percent≥minScore · verifyEvidence</text>
+        <text x="90" y="528" font-size="10.5" fill="var(--muted)">parentSolutionId → percent≤30</text>
+
+        <line x1="210" y1="534" x2="210" y2="556" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+        <!-- 8 validate output -->
+        <rect x="70" y="558" width="280" height="40" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <text x="90" y="582" font-size="12" font-weight="600">8. Validate output → 200</text>
+
+        <!-- INDEX PATH BOXES -->
+        <rect x="620" y="42" width="280" height="48" rx="8" fill="none" stroke="var(--ok)" stroke-width="1.4"/>
+        <text x="640" y="62" font-size="12" font-weight="600">A. Webhook idea-approved</text>
+        <text x="640" y="79" font-size="10.5" fill="var(--muted)">HMAC · chống replay · không qua Sota JWT</text>
+
+        <line x1="760" y1="90" x2="760" y2="112" stroke="var(--ok)" stroke-width="1.4" marker-end="url(#arrowOk)"/>
+
+        <rect x="620" y="114" width="280" height="44" rx="8" fill="none" stroke="var(--ok)" stroke-width="1.4"/>
+        <text x="640" y="132" font-size="12" font-weight="600">B. Đẩy job → queue, trả 202</text>
+        <text x="640" y="148" font-size="10.5" fill="var(--muted)">BullMQ/Redis · web process</text>
+
+        <line x1="760" y1="158" x2="760" y2="186" stroke="var(--ok)" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#arrowOk)"/>
+        <text x="900" y="178" font-size="9.5" fill="var(--muted)" text-anchor="end">process khác</text>
+
+        <rect x="620" y="188" width="280" height="56" rx="8" fill="none" stroke="var(--ok)" stroke-width="1.4"/>
+        <text x="640" y="208" font-size="12" font-weight="600">C. Worker: embed + upsert</text>
+        <text x="640" y="224" font-size="10.5" fill="var(--muted)">chunk → embed → Qdrant</text>
+        <text x="640" y="238" font-size="10.5" fill="var(--muted)">xoá chunk thừa nếu nội dung ngắn lại</text>
+
+        <line x1="760" y1="244" x2="760" y2="246" stroke="var(--ok)" stroke-width="0"/>
+        <!-- arrow down into qdrant box visually aligned -->
+        <line x1="760" y1="244" x2="760" y2="270" stroke="var(--ok)" stroke-width="1.4" marker-end="url(#arrowOk)"/>
+        <rect x="620" y="272" width="280" height="30" rx="8" fill="var(--accent-soft)" stroke="var(--ok)" stroke-width="1.6"/>
+        <text x="760" y="291" text-anchor="middle" font-size="11.5" font-weight="700">ghi vào Qdrant</text>
+
+        <!-- eventual consistency note -->
+        <rect x="620" y="330" width="280" height="64" rx="8" fill="none" stroke="var(--line)" stroke-width="1.2" stroke-dasharray="2 4"/>
+        <text x="640" y="350" font-size="11" font-weight="600" fill="var(--muted)">Eventual consistency</text>
+        <text x="640" y="366" font-size="10" fill="var(--muted)">idea mới submit KHÔNG xuất hiện</text>
+        <text x="640" y="380" font-size="10" fill="var(--muted)">ngay trong candidate — phải chờ</text>
+        <text x="640" y="391" font-size="10" fill="var(--muted)">worker xử lý xong job.</text>
+      </svg>
+      <figcaption>Luồng chính (đỏ cam) chạy đồng bộ trong một request, deadline 28s. Luồng index (xanh) là một tiến trình worker riêng, trả 202 ngay và xử lý sau — hai luồng chỉ gặp nhau ở dữ liệu trong Qdrant, không có khoá đồng bộ giữa chúng.</figcaption>
+    </figure>
+  </section>
+
+  PLACEHOLDER_CONSTANTS
+
+  <section>
+    <div class="section-head"><span class="eyebrow">02</span><h2>Ngưỡng và magic number quyết định phán quyết</h2></div>
+    <div class="grid-constants">
+      <div class="cell"><div class="val">20</div><div class="lbl">topK — số candidate gửi cho model</div><div class="loc">check-duplicates-route.ts · DEFAULT_TOP_K</div></div>
+      <div class="cell"><div class="val">40</div><div class="lbl">minScore — percent tối thiểu để vào kết quả</div><div class="loc">dedup.ts · DEFAULT_MIN_SCORE</div></div>
+      <div class="cell"><div class="val">28000ms</div><div class="lbl">deadline tổng của 1 request</div><div class="loc">check-duplicates-route.ts · DEFAULT_DEADLINE_MS</div></div>
+      <div class="cell"><div class="val">30</div><div class="lbl">percent tối đa nếu candidate = parentSolutionId</div><div class="loc">dedup.ts · PARENT_MAX_PERCENT</div></div>
+      <div class="cell"><div class="val">3000ms</div><div class="lbl">ngân sách title-similarity, lỗi thì bỏ qua</div><div class="loc">dedup.ts · TITLE_SIMILARITY_BUDGET_MS</div></div>
+      <div class="cell"><div class="val">5 / 20</div><div class="lbl">batch size / concurrency chấm điểm LLM</div><div class="loc">llm-scorer.ts · loadLlmScorerConfig</div></div>
+      <div class="cell"><div class="val">25000ms</div><div class="lbl">timeout mỗi lần gọi LLM</div><div class="loc">llm-scorer.ts · LLM_SCORER_TIMEOUT_MS</div></div>
+      <div class="cell"><div class="val">4000c</div><div class="lbl">max ký tự content candidate gửi cho model</div><div class="loc">llm-scorer.ts · LLM_SCORER_MAX_CANDIDATE_CHARS</div></div>
+      <div class="cell"><div class="val">30</div><div class="lbl">số match tối đa trong response</div><div class="loc">dedup.ts + output schema maxItems</div></div>
+      <div class="cell"><div class="val">1536d</div><div class="lbl">số chiều vector · gemini-embedding-001</div><div class="loc">embeddings.ts · DEFAULT_EMBEDDING_DIMENSIONS</div></div>
+    </div>
+    <div class="callout">
+      <b>Không có công thức cộng trọng số.</b> <code>score = percent / 100</code> hoàn toàn do LLM sinh ra theo thang điểm trong prompt (90–100 copy/paraphrase · 70–89 cùng vấn đề & giải pháp rất giống · 40–69 cùng vấn đề khác giải pháp · 0–39 khác ý tưởng). Cosine similarity của vector và của title chỉ là gợi ý đưa vào prompt cho model tham khảo — app không tự tính verdict từ hai số đó.
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><span class="eyebrow">03</span><h2>Fail-closed: lỗi downstream không bao giờ thành "không trùng"</h2></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Mã lỗi</th><th>HTTP</th><th>Khi nào xảy ra</th></tr></thead>
+        <tbody>
+          <tr><td><code>AUTH_ERROR</code></td><td class="status s4">401</td><td>JWT invocation thiếu hoặc sai</td></tr>
+          <tr><td><code>CALLER_NOT_ALLOWED</code></td><td class="status s4">403</td><td>caller-policy whitelist từ chối sub/oid/wid</td></tr>
+          <tr><td><code>INVALID_INPUT</code></td><td class="status s4">400</td><td>body sai schema (field lạ, thiếu field, vượt độ dài)</td></tr>
+          <tr><td><code>EMBEDDING_UNAVAILABLE</code></td><td class="status s5">502</td><td>Gemini embedding API lỗi/timeout</td></tr>
+          <tr><td><code>CANDIDATES_UNAVAILABLE</code></td><td class="status s5">502</td><td>Qdrant lỗi, hoặc lệch embedding model giữa lúc index và lúc query</td></tr>
+          <tr><td><code>CANDIDATE_LIMIT_EXCEEDED</code></td><td class="status s5">503</td><td>Vượt trần scroll 10 000 point — nội dung candidate bị cụt</td></tr>
+          <tr><td><code>SCORING_UNAVAILABLE</code></td><td class="status s5">502</td><td>LLM lỗi/timeout/trả JSON hỏng/bị cắt do max_tokens</td></tr>
+          <tr><td><code>TOOL_NOT_CONFIGURED</code></td><td class="status s5">503</td><td>Thiếu env bắt buộc (Qdrant, Gemini key, LLM model…)</td></tr>
+          <tr><td><code>APP_ERROR</code></td><td class="status s5">500</td><td>Output tự sinh sai schema — lỗi code, chặn trước khi trả 200</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><span class="eyebrow">04</span><h2>Thuật toán chấm điểm: model quyết định, app chỉ verify</h2></div>
+    <p class="sub" style="margin-top:0">Không có công thức cộng trọng số nào trong code. Vector (bước 4) chỉ RÚT GỌN tập ứng viên; việc "có trùng không, trùng bao nhiêu" hoàn toàn do LLM đọc nội dung đầy đủ rồi tự chấm theo thang điểm cố định trong prompt (<code>scoring-prompt.ts</code>). App sau đó chỉ kiểm lại, không tự tính lại điểm.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Khoảng score</th><th>Ý nghĩa</th></tr></thead>
+        <tbody>
+          <tr><td class="status" style="color:var(--bad)">90–100</td><td>copy hoặc paraphrase — cùng vấn đề VÀ cùng giải pháp</td></tr>
+          <tr><td class="status" style="color:var(--warn)">70–89</td><td>cùng vấn đề, giải pháp rất giống, khác biệt nhỏ</td></tr>
+          <tr><td class="status" style="color:var(--ok)">40–69</td><td>cùng vấn đề nhưng giải pháp khác, hoặc cùng giải pháp nhưng phạm vi khác</td></tr>
+          <tr><td class="status">0–39</td><td>khác ý tưởng, hoặc chỉ giống tiêu đề / chủ đề chung</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <b>Căn cứ chấm:</b> nội dung (content, fileExcerpts) là chính, tiêu đề chỉ là phụ. Tiêu đề giống nhưng nội dung khác ý tưởng → chấm tối đa 35. Tiêu đề khác nhưng nội dung giống vấn đề + giải pháp → vẫn chấm cao. <code>titleSimilarity</code>/<code>contentSimilarity</code> (cosine 0..1, do app tính) chỉ là GỢI Ý đưa vào prompt — model được nhắc rõ cosine cao chưa chắc trùng, cosine thấp vẫn có thể là diễn đạt lại, phải tự đọc nội dung để kết luận.
+    </div>
+
+    <p class="sub" style="margin:0">Mỗi match model trả về còn được gắn một <b>relation</b> — phân loại KIỂU trùng, độc lập với điểm số:</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>relation</th><th>Nghĩa</th></tr></thead>
+        <tbody>
+          <tr><td><code>copy</code></td><td>gần như cùng văn bản hoặc sao chép</td></tr>
+          <tr><td><code>paraphrase</code></td><td>cùng vấn đề, cùng giải pháp, diễn đạt khác</td></tr>
+          <tr><td><code>same_problem</code></td><td>cùng vấn đề nhưng giải pháp khác</td></tr>
+          <tr><td><code>same_solution_other_scope</code></td><td>cùng giải pháp nhưng áp dụng phạm vi/lĩnh vực khác</td></tr>
+          <tr><td><code>extension</code></td><td>ý tưởng mới kế thừa/mở rộng từ ứng viên — ép buộc khi ứng viên = <code>parentSolutionId</code></td></tr>
+          <tr><td><code>unrelated</code></td><td>không liên quan</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="sub" style="margin:0">Sau khi model trả JSON, <code>checkDuplicates()</code> (<code>dedup.ts</code>) hậu xử lý từng match theo thứ tự — <b>không tin bất kỳ field nào từ model mà không verify lại</b>:</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Bước</th><th>Hành động</th></tr></thead>
+        <tbody>
+          <tr><td>Lọc id lạ</td><td>Bỏ match có <code>id</code> không thuộc tập candidate đã lấy ở bước 4 (model không được bịa id)</td></tr>
+          <tr><td>Lọc giá trị hỏng</td><td>Bỏ match nếu <code>percent</code> không phải integer/ngoài [0,100], <code>relation</code> không thuộc 6 giá trị hợp lệ, <code>reason</code> rỗng, hoặc <code>id</code> trùng lặp trong cùng response</td></tr>
+          <tr><td>Ép quy tắc parent</td><td>Nếu <code>candidate.id === input.parentSolutionId</code>: ép <code>relation = "extension"</code> và <code>percent = min(percent, 30)</code> — áp lại ở code vì model có thể quên quy tắc 6 trong prompt</td></tr>
+          <tr><td>Verify evidence</td><td><code>verifyEvidence()</code>: chuẩn hoá NFC + gộp khoảng trắng rồi so <code>newQuote</code>/<code>candidateQuote</code> với đúng dữ liệu đã đưa cho model (title/content/fileExcerpts/matchedChunks). Không khớp nguyên văn → xoá thành chuỗi rỗng, chặn model bịa trích dẫn. Khớp thì cắt tối đa 200 ký tự</td></tr>
+          <tr><td>Gán lại type</td><td><code>type</code> lấy từ dữ liệu candidate đã index, không tin <code>type</code> do model trả</td></tr>
+          <tr><td>Áp ngưỡng</td><td>Bỏ match có <code>percent &lt; minScore</code> (lọc lại dù model đã được yêu cầu tự lọc trong prompt — không tin model tuân thủ đúng)</td></tr>
+          <tr><td>Sort + cắt</td><td>Sắp theo <code>percent</code> giảm dần, cắt tối đa 30 kết quả (khớp <code>maxItems</code> của output schema)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <b>Tại sao hậu xử lý nặng vậy?</b> Nội dung hồ sơ (title/content/fileExcerpts) được coi là dữ liệu không tin cậy — có thể chứa chỉ dẫn độc hại chèn vào để đánh lừa model (prompt injection) hoặc model tự ảo giác (hallucinate) id/trích dẫn không tồn tại. Mọi field model trả về đều bị verify lại với dữ liệu gốc trước khi vào response cuối, không có field nào "tin luôn".
+    </div>
+  </section>
+
+  <footer>vnaip-dedup · src/backend/{check-duplicates-route,dedup,candidate-source,llm-scorer,scoring-prompt}.ts</footer>
+</div>

@@ -4,7 +4,9 @@ import { createQdrantCandidateFinder } from "../candidate-source.js";
 import { checkDuplicates, DedupError, type DedupDependencies, type DedupInput } from "../dedup.js";
 import { processIndexJob, type IndexJob } from "../index-job.js";
 import { createLlmScorer } from "../llm-scorer.js";
-import { createMockEmbedder } from "../openrouter-embeddings.js";
+import { createMockEmbedder } from "../embeddings.js";
+import { createInputEmbedder } from "../input-embedder.js";
+import { createTitleSimilarity } from "../title-similarity.js";
 import { createInMemoryVectorStores, type VectorStores } from "../vector-store.js";
 import { RECORD_TYPES, type RecordType } from "../record-type.js";
 import { assertValidDedupOutput } from "../validate-output.js";
@@ -12,12 +14,14 @@ import { startFakeServer, type RecordedRequest } from "./helpers/fake-http-serve
 
 /**
  * Mốc MVP của kế hoạch: một sáng kiến được duyệt → được index → kiểm tra trùng tìm
- * thấy nó. Ghép các mảnh THẬT (processIndexJob, store, finder, scorer qua HTTP,
- * checkDuplicates, validate output); chỉ embedding là mock và OpenRouter là server giả.
+ * thấy nó. Ghép các mảnh THẬT (processIndexJob, store, embed input, tìm top-k, scorer qua
+ * HTTP, checkDuplicates, validate output); chỉ embedding là mock và Gemini là server giả.
+ * Embedding mock là túi từ băm nên "gần" ở đây nghĩa là chung nhiều từ với input.
  */
 
-const DIMS = 16;
-const options = { candidateLimit: 100, deadlineMs: 5000 };
+const DIMS = 64;
+/** minScore 0 giữ mọi ứng viên đã chấm; các test về ngưỡng truyền minScore tường minh. */
+const options = { topK: 100, deadlineMs: 5000, minScore: 0 };
 
 function job(ideaId: string, title: string, content: string, type: RecordType = "solutions"): IndexJob {
   return {
@@ -42,21 +46,24 @@ async function seed(stores: VectorStores, jobs: IndexJob[], chunkChars = 2000) {
   }
 }
 
-/** OpenRouter giả: chấm cao khi ứng viên chứa từ khoá "sự cố", thấp nếu không. */
+/** Gemini giả: chấm cao khi ứng viên chứa từ khoá "sự cố", thấp nếu không. */
 function fakeScoring(request: RecordedRequest) {
   const payload = JSON.parse(request.body.messages[1].content) as {
-    candidates: Array<{ candidateId: string; title: string; content: string }>;
+    candidates: Array<{ id: string; title: string; content: string }>;
   };
   const matches = payload.candidates.map((candidate) => ({
-    id: candidate.candidateId,
-    percent: /sự cố/i.test(`${candidate.title} ${candidate.content}`) ? 88 : 7,
+    id: candidate.id,
+    score: /sự cố/i.test(`${candidate.title} ${candidate.content}`) ? 88 : 7,
+    relation: "same_problem",
     reason: "Đánh giá giả cho test",
+    evidence: { newQuote: "", candidateQuote: "" },
   }));
   return { status: 200, json: { choices: [{ message: { content: JSON.stringify({ matches }) } }] } };
 }
 
 function buildDeps(stores: VectorStores, origin: string): DedupDependencies {
   return {
+    embedInput: createInputEmbedder(createMockEmbedder(DIMS)),
     findCandidates: createQdrantCandidateFinder(stores),
     scoreCandidates: createLlmScorer({
       baseUrl: `${origin}/api/v1`,
@@ -198,7 +205,13 @@ test("model trả về id của sáng kiến thuộc type khác thì bị bỏ, 
   const server = await startFakeServer((request) => {
     const reply = fakeScoring(request);
     const honest = JSON.parse(reply.json.choices[0]!.message.content).matches;
-    const forged = Object.values(TWIN_IDS).map((id) => ({ id, percent: 99, reason: "model bịa" }));
+    const forged = Object.values(TWIN_IDS).map((id) => ({
+      id,
+      score: 99,
+      relation: "copy",
+      reason: "model bịa",
+      evidence: { newQuote: "", candidateQuote: "" },
+    }));
     return { ...reply, json: { choices: [{ message: { content: JSON.stringify({ matches: [...forged, ...honest] }) } }] } };
   });
   try {
@@ -253,19 +266,94 @@ test("index lại một sáng kiến (nội dung mới) thì lần kiểm tra sa
   }
 });
 
-test("vượt trần: DedupError CANDIDATE_LIMIT_EXCEEDED và không gọi model", async () => {
+test("top-k: chỉ k sáng kiến gần input nhất tới được model; sáng kiến xa không bị gửi đi", async () => {
   const stores = createInMemoryVectorStores(DIMS);
-  await seed(stores, Array.from({ length: 4 }, (_, i) => job(`GP-${i}`, `Sáng kiến ${i}`, "Nội dung.")));
+  await seed(stores, [
+    job("GAN-1", "Báo cáo sự cố mặt đất bằng điện thoại", "Nhân viên báo cáo sự cố ngay tại hiện trường."),
+    job("GAN-2", "Báo cáo sự cố hiện trường", "Báo cáo sự cố mặt đất bằng điện thoại cho nhân viên."),
+    job("XA-1", "Nền tảng dữ liệu dùng chung", "Lưu trữ và chia sẻ dữ liệu giữa các khối nghiệp vụ."),
+    job("XA-2", "Cổng thanh toán nội bộ", "Thanh toán hoá đơn và đối soát công nợ hằng tháng."),
+    job("XA-3", "Hệ thống đặt lịch họp", "Đặt phòng họp và gửi lời mời cho người tham dự."),
+  ]);
   const server = await startFakeServer((request) => fakeScoring(request));
   try {
-    await assert.rejects(
-      () => checkDuplicates(input, buildDeps(stores, server.origin), { candidateLimit: 3, deadlineMs: 5000 }),
-      (error: unknown) => error instanceof DedupError && error.code === "CANDIDATE_LIMIT_EXCEEDED",
+    const output = await checkDuplicates(input, buildDeps(stores, server.origin), { topK: 2, deadlineMs: 5000, minScore: 0 });
+
+    const sent = server.requests.flatMap((r) =>
+      (JSON.parse(r.body.messages[1].content).candidates as Array<{ id: string }>).map((c) => c.id),
     );
-    assert.equal(server.requests.length, 0);
+    assert.deepEqual([...sent].sort(), ["GAN-1", "GAN-2"], "chỉ hai sáng kiến gần nhất được gửi");
+    assert.deepEqual(output.matches.map((m) => m.id).sort(), ["GAN-1", "GAN-2"]);
   } finally {
     await server.close();
   }
+});
+
+test("kho 50 sáng kiến, k=20: model chỉ nhận đúng 20 ứng viên và vẫn thấy cả 5 sáng kiến liên quan", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, [
+    ...Array.from({ length: 5 }, (_, i) =>
+      job(`LQ-${i}`, `Báo cáo sự cố mặt đất ${i}`, "Báo cáo sự cố ngay tại hiện trường bằng điện thoại."),
+    ),
+    ...Array.from({ length: 45 }, (_, i) =>
+      job(`KHAC-${String(i).padStart(2, "0")}`, `Chủ đề ${i} về kế toán`, `Đối soát công nợ kỳ ${i} và lập báo cáo thuế.`),
+    ),
+  ]);
+  const server = await startFakeServer((request) => fakeScoring(request));
+  try {
+    const output = await checkDuplicates(input, buildDeps(stores, server.origin), { topK: 20, deadlineMs: 5000, minScore: 0 });
+
+    const sent = server.requests.flatMap(
+      (r) => JSON.parse(r.body.messages[1].content).candidates as Array<{ id: string }>,
+    );
+    assert.equal(sent.length, 20, "20 trong 50 sáng kiến, không phải cả kho");
+    assert.equal(server.requests.length, 2, "20 ứng viên chia 2 batch 10");
+    const relevant = output.matches.filter((m) => m.percent === 88).map((m) => m.id).sort();
+    assert.deepEqual(relevant, ["LQ-0", "LQ-1", "LQ-2", "LQ-3", "LQ-4"], "5 sáng kiến liên quan phải nằm trong top-20");
+  } finally {
+    await server.close();
+  }
+});
+
+test("input dài được chia đoạn và embed trong MỘT request; sáng kiến khớp một đoạn ở cuối input vẫn được tìm thấy", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, [
+    job("GP-SU-CO", "Ứng dụng báo cáo sự cố", "Báo cáo sự cố ngay tại hiện trường bằng điện thoại."),
+    job("GP-KHAC", "Cổng thanh toán nội bộ", "Thanh toán hoá đơn và đối soát công nợ hằng tháng."),
+  ]);
+  const embedCalls: string[][] = [];
+  const mock = createMockEmbedder(DIMS);
+  const deps: DedupDependencies = {
+    ...buildDeps(stores, "http://unused.invalid"),
+    embedInput: createInputEmbedder(async (texts) => {
+      embedCalls.push(texts);
+      return mock(texts);
+    }, { chunkChars: 120 }),
+    scoreCandidates: async (_input, candidates) =>
+      candidates.map((c) => ({
+        id: c.id,
+        percent: /sự cố/i.test(c.content) ? 90 : 5,
+        reason: "giả",
+        relation: "same_problem" as const,
+        evidence: { newQuote: "", candidateQuote: "" },
+      })),
+  };
+  // Hồ sơ dài: đoạn đầu chẳng liên quan sáng kiến nào, chỉ đoạn cuối mới nói về báo cáo sự cố.
+  const longInput: DedupInput = {
+    type: "solutions",
+    title: "Hồ sơ dài",
+    content: [
+      "Thời tiết hôm nay nắng đẹp, trời trong xanh, gió nhẹ, nhiệt độ vừa phải cho chuyến dã ngoại cuối tuần.",
+      "Báo cáo sự cố ngay tại hiện trường bằng điện thoại.",
+    ].join("\n\n"),
+  };
+
+  const output = await checkDuplicates(longInput, deps, { topK: 1, deadlineMs: 5000, minScore: 0 });
+
+  assert.equal(embedCalls.length, 1, "một request embedding cho mọi đoạn");
+  assert.equal(embedCalls[0]!.length, 2, "input dài phải thành hai đoạn");
+  assert.ok(embedCalls[0]!.every((text) => text.startsWith("Hồ sơ dài\n\n")), "mỗi đoạn mang tiêu đề như lúc index");
+  assert.deepEqual(output.matches.map((m) => m.id), ["GP-SU-CO"], "đoạn cuối quyết định kết quả, không bị đoạn đầu pha loãng");
 });
 
 test("model lỗi giữa chừng: SCORING_UNAVAILABLE, không trả kết quả một phần", async () => {
@@ -282,7 +370,7 @@ test("model lỗi giữa chừng: SCORING_UNAVAILABLE, không trả kết quả 
   }
 });
 
-test("100 sáng kiến (đúng trần mặc định) chấm xong nhanh nhờ chạy song song", async () => {
+test("100 ứng viên (k=100) chấm xong nhanh nhờ chạy song song", async () => {
   const stores = createInMemoryVectorStores(DIMS);
   await seed(stores, Array.from({ length: 100 }, (_, i) => job(`GP-${String(i).padStart(3, "0")}`, `Sáng kiến ${i}`, i % 2 ? "Có sự cố." : "Không.")));
   // Mỗi lần gọi model mất 200ms: nếu tuần tự thì 10 batch = 2s, song song chỉ ~200ms.
@@ -295,6 +383,133 @@ test("100 sáng kiến (đúng trần mặc định) chấm xong nhanh nhờ ch�
     assert.equal(server.requests.length, 10);
     assert.equal(output.matches.length, 30, "cắt theo maxItems của schema");
     assert.ok(elapsed < 1200, `10 batch phải chạy song song, thực tế ${elapsed}ms`);
+  } finally {
+    await server.close();
+  }
+});
+
+// --- Prompt mới: ngưỡng, matchedChunks/độ giống, parentSolutionId, bằng chứng ---
+
+/** Gemini giả trả đúng một kết quả cố định cho mỗi ứng viên có id trong `byId` (còn lại vắng mặt). */
+function scoringFrom(byId: Record<string, Record<string, unknown>>) {
+  return (request: RecordedRequest) => {
+    const payload = JSON.parse(request.body.messages[1].content) as { candidates: Array<{ id: string }> };
+    const matches = payload.candidates.flatMap((c) => (byId[c.id] ? [{ id: c.id, ...byId[c.id] }] : []));
+    return { status: 200, json: { choices: [{ message: { content: JSON.stringify({ matches }) } }] } };
+  };
+}
+
+test("ngưỡng 40: prompt mang MIN_SCORE=40, model chỉ liệt kê ứng viên đạt ngưỡng và ứng viên vắng mặt không phải lỗi", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, [
+    job("GP-1", "Ứng dụng báo cáo sự cố mặt đất", "Báo cáo sự cố mặt đất theo thời gian thực."),
+    job("GP-2", "Nền tảng dữ liệu dùng chung", "Lưu trữ và chia sẻ dữ liệu giữa các khối."),
+  ]);
+  const server = await startFakeServer(
+    scoringFrom({
+      "GP-1": { score: 91, relation: "paraphrase", reason: "cùng vấn đề, cùng giải pháp" },
+    }),
+  );
+  try {
+    const output = await checkDuplicates(input, buildDeps(stores, server.origin), { ...options, minScore: 40 });
+
+    assertValidDedupOutput(output);
+    assert.deepEqual(output.matches.map((m) => [m.id, m.percent, m.relation]), [["GP-1", 91, "paraphrase"]]);
+    assert.match(server.requests[0]!.body.messages[0].content, /score >= 40, sắp xếp/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("model nhận matchedChunks (chunk khớp nhất), contentSimilarity và titleSimilarity do hệ thống tính", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  const paragraphs = Array.from({ length: 4 }, (_, i) => `Đoạn ${i + 1}: ${"chi tiết ".repeat(8).trim()}.`);
+  await seed(
+    stores,
+    [job("GP-LONG", "Sáng kiến dài", paragraphs.join("\n\n") + "\n\nĐoạn cuối nhắc tới sự cố hiện trường.")],
+    120,
+  );
+  const server = await startFakeServer((request) => fakeScoring(request));
+  try {
+    const deps: DedupDependencies = {
+      ...buildDeps(stores, server.origin),
+      titleSimilarities: createTitleSimilarity(createMockEmbedder(DIMS)),
+    };
+    await checkDuplicates({ ...input, fileExcerpts: ["Phụ lục về sự cố"] }, deps, options);
+
+    const payload = JSON.parse(server.requests[0]!.body.messages[1].content);
+    const sent = payload.candidates[0];
+    assert.ok(sent.matchedChunks.length >= 1 && sent.matchedChunks.length <= 3);
+    assert.ok(
+      sent.matchedChunks.some((chunk: string) => /sự cố hiện trường/.test(chunk)),
+      "chunk khớp input nhất (đoạn nói về sự cố) phải nằm trong matchedChunks",
+    );
+    assert.ok(sent.matchedChunks.every((chunk: string) => sent.content.includes(chunk)));
+    assert.equal(typeof sent.contentSimilarity, "number");
+    assert.ok(sent.contentSimilarity > 0 && sent.contentSimilarity <= 1);
+    assert.equal(typeof sent.titleSimilarity, "number");
+    assert.ok(sent.titleSimilarity >= 0 && sent.titleSimilarity <= 1);
+    assert.deepEqual(payload.newIdea.fileExcerpts, ["Phụ lục về sự cố"]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("parentSolutionId: sáng kiến cha bị ép extension và tối đa 30 dù model báo trùng cao; ngưỡng 40 thì không xuất hiện", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, [
+    job("GP-CHA", "Ứng dụng báo cáo sự cố mặt đất", "Báo cáo sự cố mặt đất theo thời gian thực."),
+    job("GP-KHAC", "Báo cáo sự cố bằng QR", "Quét QR để báo sự cố."),
+  ]);
+  const server = await startFakeServer(
+    scoringFrom({
+      "GP-CHA": { score: 97, relation: "copy", reason: "giống hệt" },
+      "GP-KHAC": { score: 66, relation: "same_problem", reason: "cùng vấn đề" },
+    }),
+  );
+  try {
+    const withParent = { ...input, parentSolutionId: "GP-CHA" };
+    const all = await checkDuplicates(withParent, buildDeps(stores, server.origin), options);
+    assert.deepEqual(
+      all.matches.map((m) => [m.id, m.percent, m.relation]),
+      [
+        ["GP-KHAC", 66, "same_problem"],
+        ["GP-CHA", 30, "extension"],
+      ],
+    );
+
+    const filtered = await checkDuplicates(withParent, buildDeps(stores, server.origin), { ...options, minScore: 40 });
+    assert.deepEqual(filtered.matches.map((m) => m.id), ["GP-KHAC"]);
+    assert.equal(JSON.parse(server.requests[0]!.body.messages[1].content).newIdea.parentSolutionId, "GP-CHA");
+  } finally {
+    await server.close();
+  }
+});
+
+test("bằng chứng: đoạn trích có thật trong input và sáng kiến được giữ, đoạn model bịa bị thay bằng chuỗi rỗng", async () => {
+  const stores = createInMemoryVectorStores(DIMS);
+  await seed(stores, [job("GP-1", "Ứng dụng báo cáo sự cố mặt đất", "Báo cáo sự cố mặt đất theo thời gian thực.")]);
+  const server = await startFakeServer(
+    scoringFrom({
+      "GP-1": {
+        score: 85,
+        relation: "same_problem",
+        reason: "cùng vấn đề",
+        evidence: {
+          newQuote: "báo cáo sự cố ngay tại hiện trường",
+          candidateQuote: "câu này model tự bịa ra, không có trong sáng kiến",
+        },
+      },
+    }),
+  );
+  try {
+    const output = await checkDuplicates(input, buildDeps(stores, server.origin), options);
+
+    assertValidDedupOutput(output);
+    assert.deepEqual(output.matches[0]!.evidence, {
+      newQuote: "báo cáo sự cố ngay tại hiện trường",
+      candidateQuote: "",
+    });
   } finally {
     await server.close();
   }
