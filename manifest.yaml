@@ -40,9 +40,9 @@ contributes:
       failure_mode: abort
 
 service:
-  baseUrl: https://ai-portfolio-project-bujz.onrender.com
+  baseUrl: https://vnaip-dedup.onrender.com
 health:
-  url: https://ai-portfolio-project-bujz.onrender.com/health
+  url: https://vnaip-dedup.onrender.com/health
   intervalSeconds: 60
 environments:
   local:
