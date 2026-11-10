@@ -15,6 +15,45 @@ Add another capability at any time with `sota add`.
 
 Editable source lives in `src/`. Generated frontend and backend output lives in `dist/`.
 
+## Cấu trúc mã nguồn
+
+Backend nằm ở `src/backend/`, chia theo lớp. Mỗi lớp chỉ được import các lớp được liệt kê ở cột
+"Được import"; `src/backend/__tests__/architecture.test.ts` kiểm tra điều này khi chạy `npm test`.
+
+| Thư mục | Trách nhiệm | Được import |
+| --- | --- | --- |
+| `server.ts`, `worker.ts` | Entrypoint của tiến trình web và worker. **Giữ nguyên đường dẫn**: lệnh start trỏ vào `dist/backend/server.js` và `worker.js`. | mọi lớp |
+| `app.ts` | `createApp()`: middleware chung, `/health`, thứ tự mount (là hợp đồng, có test khoá). | mọi lớp |
+| `platform/` | Biên với SotaAgents Core: xác thực invocation JWT, chính sách người gọi, error handler, bóc envelope của tool, `mountProtectedTool`. | `shared` |
+| `shared/` | Thành phần nhỏ dùng chung: logger, `isRecord`, `RecordType`. | không |
+| `integrations/` | Hệ thống ngoài, không biết gì về tool: `embeddings/` (Gemini), `qdrant/`, `queue/` (BullMQ, Redis). | `shared` |
+| `indexing/` | Luồng nạp dữ liệu webhook → hàng đợi → worker → Qdrant. Không phải Sota tool. | `shared`, `integrations` |
+| `tools/` | Mỗi Sota tool một thư mục (`tools/check-duplicates/`); `tools/index.ts` là registry. Tool không import tool khác. | `shared`, `platform`, `integrations` |
+| `scaffold/` | Route mẫu của `sota init` (`/api/hello`, `/tools/example`), không có trong manifest. Xoá được khi không cần. | `shared`, `platform` |
+
+Test nằm cạnh module trong các thư mục `__tests__/`. Helper dùng chung và test cấp ứng dụng
+(`app-entrypoint`, `architecture`) nằm ở `src/backend/__tests__/`. `docs/prototype/` giữ dữ liệu mẫu của prototype
+frontend, không thuộc backend.
+
+## Thêm tool mới
+
+1. **Schema.** Tạo `src/schemas/<tool>-input.schema.json` và `<tool>-output.schema.json`, đóng object
+   (`additionalProperties: false`), có `required` và giới hạn độ dài/số phần tử.
+2. **Mã.** Tạo `src/backend/tools/<tool>/` gồm:
+   - `route.ts`: handler. Đọc input bằng `unwrapToolInput(request.body)`, validate input rồi mới chạy
+     nghiệp vụ, validate output trước khi trả, và map lỗi sang mã HTTP/JSON ổn định.
+   - `register.ts`: gọi `mountProtectedTool(app, appId, { path, scope: "tool:<tool>", callerPolicy, handler })`.
+     Chính sách người gọi đọc từ `callerEnvNames("<TOOL>")` (biến `<TOOL>_ALLOWED_SUBS|OIDS|WIDS`).
+   - phần nghiệp vụ và `__tests__/`. Dùng embedding, Qdrant, queue có sẵn qua `integrations/`.
+     Khi cần thứ tool đầu tiên đang giữ riêng (ví dụ client LLM của `llm-scorer.ts`), tách nó ra
+     `integrations/` rồi cho cả hai tool dùng; không import trực tiếp từ tool khác.
+3. **Đăng ký.** Thêm một dòng vào `tools/index.ts`.
+4. **Manifest.** Thêm mục vào `contributes.tools` của `manifest.yaml` (`name`, `description` nêu khi nào gọi
+   và trả về gì, `route`, `inputSchema`, `outputSchema`, `timeoutMs`, `failure_mode`). `route` và scope phải
+   khớp bước 2. Cập nhật `version` theo quy trình phát hành.
+5. **Cấu hình.** Biến môi trường có tiền tố riêng (`<TOOL>_...`) trong `.env.example` và một mục trong README này.
+6. **Kiểm tra.** `npm run typecheck && npm run typecheck:tests && npm test && sota validate`.
+
 ## Tool: `check-duplicates`
 
 Kiểm tra mức độ tương đồng giữa một hồ sơ đầu vào và các sáng kiến cùng loại đã được duyệt
@@ -35,13 +74,15 @@ Xem contract đầy đủ trong:
 
 - `src/schemas/dedup-input.schema.json`
 - `src/schemas/dedup-output.schema.json`
-- `src/backend/dedup.ts` (logic nghiệp vụ, framework-neutral, test được độc lập)
-- `src/backend/input-embedder.ts` (bước 1: embed input)
-- `src/backend/candidate-source.ts` (bước 2: tìm top-k ở Qdrant, gom chunk theo sáng kiến)
-- `src/backend/llm-scorer.ts` (chấm điểm theo batch song song, có deadline) và
-  `src/backend/scoring-prompt.ts` (system prompt chấm điểm, phân loại quan hệ và trích bằng chứng)
-- `src/backend/title-similarity.ts` (bước 2b: `titleSimilarity` giữa tiêu đề input và tiêu đề ứng viên)
-- `src/backend/caller-policy.ts` (giới hạn ai được gọi tool)
+- `src/backend/tools/check-duplicates/dedup.ts` (logic nghiệp vụ, framework-neutral, test được độc lập)
+- `src/backend/tools/check-duplicates/input-embedder.ts` (bước 1: embed input)
+- `src/backend/tools/check-duplicates/candidate-source.ts` (bước 2: tìm top-k ở Qdrant, gom chunk theo sáng kiến)
+- `src/backend/tools/check-duplicates/llm-scorer.ts` (chấm điểm theo batch song song, có deadline) và
+  `src/backend/tools/check-duplicates/scoring-prompt.ts` (system prompt chấm điểm, phân loại quan hệ và trích bằng chứng)
+- `src/backend/tools/check-duplicates/title-similarity.ts` (bước 2b: `titleSimilarity` giữa tiêu đề input và tiêu đề ứng viên)
+- `src/backend/tools/check-duplicates/route.ts` (HTTP handler, dựng dependency, map lỗi sang HTTP) và
+  `src/backend/tools/check-duplicates/register.ts` (route, scope, chính sách người gọi)
+- `src/backend/platform/caller-policy.ts` (giới hạn ai được gọi tool, dùng chung cho mọi tool)
 
 ### Mô hình dữ liệu: 3 collection theo type
 
@@ -304,7 +345,7 @@ sota validate              # validate manifest.yaml
 dùng `nvm` và đang ở Node 18, chạy `nvm use 22` (hoặc mới hơn) trước. Một số test tích hợp
 chỉ chạy khi đặt `REDIS_TEST_URL`.
 
-Các test chính của luồng kiểm tra trùng (xem `src/backend/__tests__/`):
+Các test chính của luồng kiểm tra trùng (nằm trong các thư mục `__tests__/` cạnh module, dưới `src/backend/`):
 
 - `dedup.test.ts`: logic nghiệp vụ, lỗi nguồn ứng viên/model propagate đúng thay vì trả
   "không trùng" im lặng, `excludeIds`, vượt trần, deadline.
@@ -331,6 +372,10 @@ Các test chính của luồng kiểm tra trùng (xem `src/backend/__tests__/`):
 - `validate-input.test.ts`, `validate-output.test.ts`: validate tay theo đúng JSON Schema
   (SotaAgents không tự kiểm tra outputSchema tại runtime).
 - `sota-auth.test.ts`: JWT hợp lệ, thiếu token, hết hạn, audience sai, thiếu scope.
+- `app-entrypoint.test.ts`: chạy `server.ts` thật như tiến trình con (env mock, không đọc `.env`) và khoá bộ route
+  công khai, thứ tự mount (webhook trước parser JSON chung), định dạng lỗi 401/400/404.
+- `architecture.test.ts`: hướng phụ thuộc giữa các lớp (bảng ở "Cấu trúc mã nguồn") và mọi tool trong `tools/` đã được đăng ký.
+- `tool-envelope.test.ts`: cách bóc input từ envelope `{ body: { input } }`.
 
 ### Việc còn lại trước khi tích hợp VNAIP và triển khai production
 
