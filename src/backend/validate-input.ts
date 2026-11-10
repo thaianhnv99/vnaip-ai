@@ -1,5 +1,6 @@
 import type { DedupInput } from './dedup.js';
 import { isRecordType, RECORD_TYPES_LABEL } from './record-type.js';
+import { isRecord } from './shared/guards.js';
 
 /** Giữ khớp với maxItems của excludeIds trong dedup-input.schema.json. */
 const MAX_EXCLUDE_IDS = 100;
@@ -80,8 +81,4 @@ function collectInputErrors(input: unknown): string[] {
 
 function isBoundedString(value: unknown, min: number, max: number): boolean {
   return typeof value === 'string' && value.length >= min && value.length <= max;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

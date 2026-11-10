@@ -1,5 +1,6 @@
 import { Queue, UnrecoverableError, Worker, type Job } from "bullmq";
 import type { JobHandler, JobOutcome, JobQueue, RetryPolicy } from "./job-queue.js";
+import type { Logger } from "./shared/logger.js";
 
 /**
  * Hàng đợi job trên BullMQ (Redis), cài giao diện JobQueue.
@@ -68,12 +69,6 @@ export interface BullMqConfig {
   publishTimeoutMs: number;
   maxJobBytes: number;
 }
-
-type QueueLogger = (
-  level: "info" | "error",
-  event: string,
-  details: Record<string, unknown>,
-) => void;
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const NAME_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
@@ -147,12 +142,12 @@ export function loadBullMqConfig(
 
 export class BullMqJobQueue<T> implements JobQueue<T> {
   private readonly config: BullMqConfig;
-  private readonly log: QueueLogger;
+  private readonly log: Logger;
   private readonly secrets: string[];
   private queue: Queue | undefined;
   private worker: Worker | undefined;
 
-  constructor(config: BullMqConfig, log: QueueLogger) {
+  constructor(config: BullMqConfig, log: Logger) {
     this.config = config;
     this.log = log;
     const { password, username } = config.connection;

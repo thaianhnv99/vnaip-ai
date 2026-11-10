@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isRecord } from "./shared/guards.js";
 
 /**
  * Embedding client qua API gốc của Gemini:
@@ -326,10 +327,6 @@ function assertTexts(texts: string[]): void {
       "Văn bản cần embedding phải là chuỗi không rỗng",
     );
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**

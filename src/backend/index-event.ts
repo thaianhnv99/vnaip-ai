@@ -1,4 +1,5 @@
 import { isRecordType, RECORD_TYPES_LABEL, type RecordType } from "./record-type.js";
+import { isRecord } from "./shared/guards.js";
 
 /**
  * Hợp đồng của event "sáng kiến được duyệt" mà VNAIP BE gửi vào webhook.
@@ -160,8 +161,4 @@ function requireString(
     throw new IndexEventError(`Trường ${field} vượt ${maxLength} ký tự`);
   }
   return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

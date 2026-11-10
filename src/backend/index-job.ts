@@ -4,6 +4,7 @@ import { pointId, type VectorPoint, type VectorStores } from "./vector-store.js"
 import type { RecordType } from "./record-type.js";
 import type { JobHandler, JobOutcome, RetryPolicy } from "./job-queue.js";
 import { decideOutcome } from "./job-queue.js";
+import type { Logger } from "./shared/logger.js";
 
 /**
  * Job index một sáng kiến. Job mang đủ thông tin để worker làm việc mà không
@@ -115,12 +116,6 @@ export async function processIndexJob(
   return { chunks: chunks.length };
 }
 
-export type JobLogger = (
-  level: "info" | "error",
-  event: string,
-  details: Record<string, unknown>,
-) => void;
-
 /**
  * Biến processIndexJob thành handler cho queue: lỗi được phân loại thành
  * retry hoặc dead-letter. Log chỉ chứa định danh và mã lỗi, không có
@@ -129,7 +124,7 @@ export type JobLogger = (
 export function createIndexJobHandler(
   deps: IndexDependencies,
   policy: RetryPolicy,
-  log: JobLogger,
+  log: Logger,
 ): JobHandler<IndexJob> {
   return async (job, { attempt }): Promise<JobOutcome> => {
     const startedAt = performance.now();

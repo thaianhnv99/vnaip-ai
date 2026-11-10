@@ -1,5 +1,6 @@
 import type { Express, RequestHandler } from 'express';
 import { requireSotaInvocation } from './sota-auth.js';
+import { unwrapToolInput } from './platform/tool-envelope.js';
 import { handleExampleTool } from './tool.example.js';
 import { createCheckDuplicatesHandler } from './check-duplicates-route.js';
 import {
@@ -19,8 +20,7 @@ export interface ToolRouteOptions {
 
 export function registerToolRoutes(app: Express, appId: string, options: ToolRouteOptions = {}) {
   app.post('/tools/example', requireSotaInvocation(appId, 'tool:example'), async (request, response) => {
-    const body = isRecord(request.body?.body) ? request.body.body : request.body;
-    response.json(await handleExampleTool(body?.input ?? body, response.locals.sota));
+    response.json(await handleExampleTool(unwrapToolInput(request.body), response.locals.sota));
   });
 
   const callerPolicy = options.callerPolicy ?? loadCallerPolicy();
@@ -45,8 +45,4 @@ export function registerToolRoutes(app: Express, appId: string, options: ToolRou
     requireAllowedCaller(callerPolicy),
     options.checkDuplicates ?? createCheckDuplicatesHandler(),
   );
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

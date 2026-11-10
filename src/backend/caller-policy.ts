@@ -1,5 +1,6 @@
 import type { RequestHandler } from "express";
 import type { InvocationClaims } from "./sota-auth.js";
+import { defaultLog, type Logger } from "./shared/logger.js";
 
 /**
  * Giới hạn AI được gọi tool `check-duplicates`.
@@ -82,12 +83,6 @@ export function evaluateCaller(
   return { allowed: true };
 }
 
-export type CallerLogger = (
-  level: "info" | "error",
-  event: string,
-  details: Record<string, unknown>,
-) => void;
-
 /**
  * Phải đặt SAU requireSotaInvocation: nó đọc claims đã xác thực ở
  * `response.locals.sota`. Log từ chối chỉ nêu lý do, không ghi giá trị claim
@@ -95,7 +90,7 @@ export type CallerLogger = (
  */
 export function requireAllowedCaller(
   policy: CallerPolicy,
-  log: CallerLogger = defaultLog,
+  log: Logger = defaultLog,
 ): RequestHandler {
   return (request, response, next) => {
     const claims = response.locals.sota as InvocationClaims | undefined;
@@ -132,14 +127,4 @@ function parseList(raw: string | undefined): ReadonlySet<string> {
 
 function isMember(allowed: ReadonlySet<string>, claim: unknown): boolean {
   return typeof claim === "string" && claim.length > 0 && allowed.has(claim);
-}
-
-function defaultLog(
-  level: "info" | "error",
-  event: string,
-  details: Record<string, unknown>,
-) {
-  console.log(
-    JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...details }),
-  );
 }

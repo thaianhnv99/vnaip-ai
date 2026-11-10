@@ -6,6 +6,7 @@ import { registerToolRoutes } from './tool-routes.js';
 import { createErrorHandler } from './error-handler.js';
 import { startWebhookService } from './index-service.js';
 import { installBodyParsers } from './webhook-routes.js';
+import { defaultLog as log } from './shared/logger.js';
 
 const appId = 'vnaip-dedup';
 const app = express();
@@ -101,8 +102,4 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   };
   process.once('SIGTERM', () => shutdown('SIGTERM'));
   process.once('SIGINT', () => shutdown('SIGINT'));
-}
-
-function log(level: 'info' | 'error', event: string, details: Record<string, unknown>) {
-  console.log(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...details }));
 }

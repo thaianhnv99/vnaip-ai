@@ -2,7 +2,8 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import express from "express";
 import type { Express, Request, RequestHandler, Response } from "express";
 import { IndexEventError, parseIndexEvents } from "./index-event.js";
-import type { IndexJob, JobLogger } from "./index-job.js";
+import type { IndexJob } from "./index-job.js";
+import { defaultLog, type Logger } from "./shared/logger.js";
 import type { JobQueue } from "./job-queue.js";
 import type { ReplayGuard } from "./replay-guard.js";
 
@@ -87,7 +88,7 @@ export interface WebhookDependencies {
   hmacSecrets: string[];
   /** Bắt buộc: không có guard thì không có chống replay, nên không cho bỏ trống. */
   replayGuard: ReplayGuard;
-  log?: JobLogger;
+  log?: Logger;
   newJobId?: () => string;
   /** Giờ ghi vào job (`receivedAt`). KHÔNG dùng để kiểm tra chữ ký. */
   now?: () => Date;
@@ -152,7 +153,7 @@ export function createIdeaApprovedHandlers(deps: WebhookDependencies): RequestHa
 
 function reject(
   response: Response,
-  log: JobLogger,
+  log: Logger,
   reason: Rejection | "unsupported_media_type" | "replayed_signature",
 ) {
   log("error", "webhook_rejected", { requestId: requestIdOf(response), reason });
@@ -162,7 +163,7 @@ function reject(
  * Bước 1: kiểm tra những gì không cần body. Header sai/thiếu/hết hạn bị từ chối
  * trước khi server đọc 1 byte body nào.
  */
-function checkSignatureHeaders(deps: WebhookDependencies, log: JobLogger): RequestHandler {
+function checkSignatureHeaders(deps: WebhookDependencies, log: Logger): RequestHandler {
   const authNow = deps.authNow ?? (() => new Date());
 
   return (request, response, next) => {
@@ -195,7 +196,7 @@ function readSignatureHeaders(request: Request, now: Date): PresentedSignature |
 }
 
 /** Bước 3: xác thực trên raw bytes rồi mới đụng tới nội dung. */
-function handleIdeaApproved(deps: WebhookDependencies, log: JobLogger): RequestHandler {
+function handleIdeaApproved(deps: WebhookDependencies, log: Logger): RequestHandler {
   const now = deps.now ?? (() => new Date());
 
   return async (request, response) => {
@@ -354,14 +355,4 @@ function signatureMatches(
 
 function requestIdOf(response: Response): string | number | string[] | null {
   return response.getHeader("x-request-id") ?? null;
-}
-
-function defaultLog(
-  level: "info" | "error",
-  event: string,
-  details: Record<string, unknown>,
-) {
-  console.log(
-    JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...details }),
-  );
 }

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { describeStartupError, startIndexWorker } from './index-service.js';
+import { defaultLog as log } from './shared/logger.js';
 
 /**
  * Tiến trình worker index, chạy tách khỏi tiến trình web (`server.ts`):
@@ -39,7 +40,3 @@ const shutdown = (signal: string) => {
 };
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 process.once('SIGINT', () => shutdown('SIGINT'));
-
-function log(level: 'info' | 'error', event: string, details: Record<string, unknown>) {
-  console.log(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...details }));
-}

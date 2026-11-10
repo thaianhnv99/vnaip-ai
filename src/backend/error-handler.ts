@@ -1,17 +1,12 @@
 import type { ErrorRequestHandler } from "express";
+import type { Logger } from "./shared/logger.js";
 
 /**
  * Error handler cuối cùng. Lỗi 4xx của body-parser (JSON hỏng, body quá lớn)
  * phải trả đúng 400/413 thay vì 500, để webhook caller biết lỗi nằm ở request
  * của mình. Mọi lỗi khác trả 500 chung, chi tiết chỉ nằm trong log.
  */
-export function createErrorHandler(
-  log: (
-    level: "info" | "error",
-    event: string,
-    details: Record<string, unknown>,
-  ) => void,
-): ErrorRequestHandler {
+export function createErrorHandler(log: Logger): ErrorRequestHandler {
   return (error, _request, response, next) => {
     if (response.headersSent) {
       next(error);

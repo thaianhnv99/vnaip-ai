@@ -1,5 +1,6 @@
 import { Redis } from "ioredis";
 import type { RedisConnection } from "./bullmq-queue.js";
+import type { Logger } from "./shared/logger.js";
 
 /**
  * Chống replay cho webhook: mỗi chữ ký hợp lệ chỉ được nhận MỘT lần trong cửa
@@ -88,12 +89,6 @@ export class RedisReplayGuard implements ReplayGuard {
   }
 }
 
-type GuardLogger = (
-  level: "info" | "error",
-  event: string,
-  details: Record<string, unknown>,
-) => void;
-
 /**
  * Lệnh lỗi sau tối đa vài giây thay vì chờ vô hạn: guard hỏng thì webhook trả 503
  * (bên gửi sẽ gửi lại) chứ không bao giờ bỏ qua kiểm tra replay.
@@ -101,7 +96,7 @@ type GuardLogger = (
 export function createRedisReplayGuard(
   connection: RedisConnection,
   keyPrefix: string,
-  log: GuardLogger,
+  log: Logger,
 ): RedisReplayGuard {
   const redis = new Redis({
     ...connection,

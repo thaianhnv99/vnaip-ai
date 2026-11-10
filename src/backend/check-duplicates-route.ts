@@ -18,6 +18,9 @@ import { createInputEmbedder } from "./input-embedder.js";
 import { createTitleSimilarity } from "./title-similarity.js";
 import { createVectorStoresFromEnv } from "./qdrant-store.js";
 import { VectorStoreError, lazyEnsureCollections } from "./vector-store.js";
+import { unwrapToolInput } from "./platform/tool-envelope.js";
+import { isRecord } from "./shared/guards.js";
+import { defaultLog, type Logger } from "./shared/logger.js";
 
 /**
  * k của top-k: số sáng kiến gần input nhất (theo vector) được gửi cho model chấm. 20 sáng
@@ -75,7 +78,7 @@ function loadDeadlineMs(env: NodeJS.ProcessEnv): number {
  */
 export function buildDependencies(
   env: NodeJS.ProcessEnv = process.env,
-  log: ToolLogger = defaultLog,
+  log: Logger = defaultLog,
 ): DedupDependencies {
   const embeddingConfig = loadEmbeddingConfig(env);
   const stores = createVectorStoresFromEnv(env, embeddingConfig.dimensions);
@@ -112,7 +115,7 @@ type DependencySource = DedupDependencies | (() => DedupDependencies);
 export function createCheckDuplicatesHandler(
   source: DependencySource = () => buildDependencies(),
   env: NodeJS.ProcessEnv = process.env,
-  log: ToolLogger = defaultLog,
+  log: Logger = defaultLog,
 ): RequestHandler {
   const options = {
     topK: loadTopK(env),
@@ -134,10 +137,7 @@ export function createCheckDuplicatesHandler(
 
     let input;
     try {
-      const envelopeBody = isRecord(request.body?.body)
-        ? request.body.body
-        : request.body;
-      input = parseDedupInput(envelopeBody?.input ?? envelopeBody);
+      input = parseDedupInput(unwrapToolInput(request.body));
     } catch (error) {
       response.status(400).json({
         code: "INVALID_INPUT",
@@ -343,29 +343,4 @@ function rootErrorDetail(error: unknown): Record<string, string | number> | unde
     if (typeof value === "number" && Number.isFinite(value)) safe[key] = value;
   }
   return Object.keys(safe).length > 0 ? safe : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-export type ToolLogger = (
-  level: "info" | "error",
-  event: string,
-  details: Record<string, unknown>,
-) => void;
-
-function defaultLog(
-  level: "info" | "error",
-  event: string,
-  details: Record<string, unknown>,
-) {
-  console.log(
-    JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level,
-      event,
-      ...details,
-    }),
-  );
 }

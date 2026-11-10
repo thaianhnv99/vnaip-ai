@@ -19,6 +19,7 @@ import {
   type VectorStores,
 } from "./vector-store.js";
 import { isRecordType, type RecordType } from "./record-type.js";
+import { isRecord } from "./shared/guards.js";
 
 /**
  * Qdrant qua REST. Chỉ dùng fetch để không thêm phụ thuộc và dễ test bằng
@@ -528,8 +529,4 @@ function dig(value: unknown, path: string[]): unknown {
     current = current[key];
   }
   return current;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

@@ -1,5 +1,6 @@
 import { isRelation, MAX_QUOTE_CHARS, RELATIONS, type DedupOutput } from './dedup.js';
 import { isRecordType, RECORD_TYPES_LABEL } from './record-type.js';
+import { isRecord } from './shared/guards.js';
 
 /**
  * Validate thủ công output theo đúng dedup-output.schema.json trước khi trả
@@ -115,8 +116,4 @@ function collectEvidenceErrors(evidence: unknown, prefix: string): string[] {
     }
   }
   return errors;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

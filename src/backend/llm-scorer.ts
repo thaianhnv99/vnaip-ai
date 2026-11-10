@@ -1,5 +1,6 @@
 import { isRelation, type Candidate, type DedupDependencies, type DedupInput, type RawModelMatch, type ScoreOptions } from "./dedup.js";
 import { buildScoringPrompt } from "./scoring-prompt.js";
+import { isRecord } from "./shared/guards.js";
 /**
  * Endpoint tương thích OpenAI của Gemini (chat completions). Khác với embedding, vốn dùng
  * API gốc của Gemini (`DEFAULT_EMBEDDING_BASE_URL` ở embeddings.ts).
@@ -578,10 +579,6 @@ function isTimeout(error: unknown): boolean {
     error instanceof Error &&
     (error.name === "TimeoutError" || error.name === "AbortError")
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**

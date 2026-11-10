@@ -14,8 +14,8 @@ import {
 import {
   createIndexJobHandler,
   type IndexJob,
-  type JobLogger,
 } from "./index-job.js";
+import { defaultLog, type Logger } from "./shared/logger.js";
 import {
   WebhookConfigError,
   loadWebhookHmacSecrets,
@@ -72,7 +72,7 @@ export class IndexServiceConfigError extends Error {
  */
 export async function startWebhookService(
   env: NodeJS.ProcessEnv = process.env,
-  log: JobLogger = defaultLog,
+  log: Logger = defaultLog,
 ): Promise<WebhookService | null> {
   try {
     const hmacSecrets = loadWebhookHmacSecrets(env);
@@ -121,7 +121,7 @@ export async function startWebhookService(
  */
 export async function startIndexWorker(
   env: NodeJS.ProcessEnv = process.env,
-  log: JobLogger = defaultLog,
+  log: Logger = defaultLog,
 ): Promise<IndexWorker> {
   if (isMockQueue(env)) {
     throw new IndexServiceConfigError(
@@ -154,7 +154,7 @@ export async function startIndexWorker(
   };
 }
 
-function buildIndexHandler(env: NodeJS.ProcessEnv, log: JobLogger): JobHandler<IndexJob> {
+function buildIndexHandler(env: NodeJS.ProcessEnv, log: Logger): JobHandler<IndexJob> {
   const embeddingConfig = loadEmbeddingConfig(env);
   const embed = createEmbedderFromEnv(env);
   // Ba store, mỗi type (ideas / solutions / initiatives) một collection; job được ghi
@@ -181,7 +181,7 @@ function isMockQueue(env: NodeJS.ProcessEnv): boolean {
  * chỉ cục bộ). Không đặt nghĩa là dùng BullMQ (Redis) và báo lỗi cấu hình nếu
  * thiếu REDIS_URL, để hosted không âm thầm chạy bằng hàng đợi tạm.
  */
-function createQueueFromEnv(env: NodeJS.ProcessEnv, log: JobLogger): JobQueue<IndexJob> {
+function createQueueFromEnv(env: NodeJS.ProcessEnv, log: Logger): JobQueue<IndexJob> {
   if (isMockQueue(env)) return new InMemoryJobQueue<IndexJob>();
   return new BullMqJobQueue<IndexJob>(loadBullMqConfig(env, loadRetryPolicy(env)), log);
 }
@@ -190,7 +190,7 @@ function createQueueFromEnv(env: NodeJS.ProcessEnv, log: JobLogger): JobQueue<In
  * Chống replay dùng chung Redis với hàng đợi để mọi instance web cùng thấy một
  * tập chữ ký đã nhận. Chế độ mock chỉ có một tiến trình nên dùng bộ nhớ.
  */
-function createReplayGuardFromEnv(env: NodeJS.ProcessEnv, log: JobLogger): ReplayGuard {
+function createReplayGuardFromEnv(env: NodeJS.ProcessEnv, log: Logger): ReplayGuard {
   if (isMockQueue(env)) return new InMemoryReplayGuard();
   const config = loadBullMqConfig(env, loadRetryPolicy(env));
   return createRedisReplayGuard(config.connection, `${config.prefix}:webhook-replay:`, log);
@@ -209,14 +209,4 @@ export function describeStartupError(error: unknown): Record<string, unknown> {
     errorCode: (error as { code?: string } | null)?.code ?? "UNKNOWN",
     ...(known ? { message: (error as Error).message } : {}),
   };
-}
-
-function defaultLog(
-  level: "info" | "error",
-  event: string,
-  details: Record<string, unknown>,
-) {
-  console.log(
-    JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...details }),
-  );
 }
