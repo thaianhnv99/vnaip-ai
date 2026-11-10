@@ -101,7 +101,7 @@ export interface RawModelMatch {
 }
 
 /**
- * Lỗi nghiệp vụ có mã ổn định để tool-routes map sang HTTP/JSON đúng contract.
+ * Lỗi nghiệp vụ có mã ổn định để route.ts map sang HTTP/JSON đúng contract.
  * Không bao giờ đưa nội dung hồ sơ hoặc chi tiết downstream nhạy cảm vào message.
  */
 export class DedupError extends Error {
