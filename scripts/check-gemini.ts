@@ -26,12 +26,12 @@ import {
   EmbeddingError,
   createHttpEmbedder,
   loadEmbeddingConfig,
-} from '../src/backend/embeddings.js';
+} from '../src/backend/integrations/embeddings/embeddings.js';
 import {
   LlmScorerError,
   loadLlmScorerConfig,
   scoreCandidatesWithLlm,
-} from '../src/backend/llm-scorer.js';
+} from '../src/backend/tools/check-duplicates/llm-scorer.js';
 
 const burstArg = process.argv.find((arg) => arg.startsWith('--burst='));
 const burst = burstArg ? Number(burstArg.slice('--burst='.length)) : 0;

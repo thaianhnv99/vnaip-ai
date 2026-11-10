@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { describeStartupError, startIndexWorker } from './index-service.js';
+import { describeStartupError, startIndexWorker } from './indexing/index-service.js';
 import { defaultLog as log } from './shared/logger.js';
 
 /**

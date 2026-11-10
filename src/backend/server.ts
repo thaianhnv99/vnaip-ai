@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { requireSotaInvocation } from './sota-auth.js';
-import { registerToolRoutes } from './tool-routes.js';
-import { createErrorHandler } from './error-handler.js';
-import { startWebhookService } from './index-service.js';
-import { installBodyParsers } from './webhook-routes.js';
+import { requireSotaInvocation } from './platform/sota-auth.js';
+import { registerToolRoutes } from './tools/index.js';
+import { createErrorHandler } from './platform/error-handler.js';
+import { startWebhookService } from './indexing/index-service.js';
+import { installBodyParsers } from './indexing/webhook-routes.js';
 import { defaultLog as log } from './shared/logger.js';
 
 const appId = 'vnaip-dedup';

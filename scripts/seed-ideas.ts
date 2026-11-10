@@ -29,12 +29,12 @@
 import 'dotenv/config';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { parseIndexEvent } from '../src/backend/index-event.js';
-import { processIndexJob, type IndexJob } from '../src/backend/index-job.js';
-import { createEmbedderFromEnv, loadEmbeddingConfig } from '../src/backend/embeddings.js';
-import { createVectorStoresFromEnv, loadQdrantConfig } from '../src/backend/qdrant-store.js';
-import { RECORD_TYPES, type RecordType } from '../src/backend/record-type.js';
-import { lazyEnsureCollections } from '../src/backend/vector-store.js';
+import { parseIndexEvent } from '../src/backend/indexing/index-event.js';
+import { processIndexJob, type IndexJob } from '../src/backend/indexing/index-job.js';
+import { createEmbedderFromEnv, loadEmbeddingConfig } from '../src/backend/integrations/embeddings/embeddings.js';
+import { createVectorStoresFromEnv, loadQdrantConfig } from '../src/backend/integrations/qdrant/qdrant-store.js';
+import { RECORD_TYPES, type RecordType } from '../src/backend/shared/record-type.js';
+import { lazyEnsureCollections } from '../src/backend/integrations/qdrant/vector-store.js';
 
 const SEED_FILE = fileURLToPath(new URL('./seed-ideas.json', import.meta.url));
 const SEED_PREFIX = 'SEED-';

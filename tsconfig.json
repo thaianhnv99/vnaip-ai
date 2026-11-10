@@ -4,6 +4,6 @@
     "src/backend/**/*.ts"
   ],
   "exclude": [
-    "src/backend/__tests__/**/*"
+    "src/backend/**/__tests__/**/*"
   ]
 }
