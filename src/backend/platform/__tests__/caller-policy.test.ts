@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Request, Response } from "express";
 import {
+  callerEnvNames,
   evaluateCaller,
   isCallerPolicyEmpty,
   loadCallerPolicy,
@@ -10,7 +11,7 @@ import {
 } from "../caller-policy.js";
 
 function policy(env: Record<string, string | undefined>): CallerPolicy {
-  return loadCallerPolicy(env);
+  return loadCallerPolicy(callerEnvNames("CHECK_DUPLICATES"), env);
 }
 
 const claims = { sub: "svc-vnaip-be", oid: "org-vnaip", wid: "ws-vnaip" };
@@ -193,4 +194,40 @@ test("log từ chối chỉ nêu lý do và requestId, không ghi giá trị cla
   assert.equal(lines[0]!.requestId, "req-1");
   assert.doesNotMatch(JSON.stringify(lines), /bi-tu-choi/);
   assert.doesNotMatch(JSON.stringify(state.body), /svc-vnaip-be|bi-tu-choi/);
+});
+
+test("callerEnvNames: tên biến của check-duplicates giữ nguyên (hợp đồng cấu hình đã triển khai)", () => {
+  assert.deepEqual(
+    { ...callerEnvNames("CHECK_DUPLICATES") },
+    {
+      subs: "CHECK_DUPLICATES_ALLOWED_SUBS",
+      oids: "CHECK_DUPLICATES_ALLOWED_OIDS",
+      wids: "CHECK_DUPLICATES_ALLOWED_WIDS",
+    },
+  );
+});
+
+test("callerEnvNames: tool khác dùng tiền tố riêng và không đọc nhầm biến của tool khác", () => {
+  const names = callerEnvNames("OTHER_TOOL");
+  assert.deepEqual(
+    { ...names },
+    {
+      subs: "OTHER_TOOL_ALLOWED_SUBS",
+      oids: "OTHER_TOOL_ALLOWED_OIDS",
+      wids: "OTHER_TOOL_ALLOWED_WIDS",
+    },
+  );
+
+  const loaded = loadCallerPolicy(names, {
+    OTHER_TOOL_ALLOWED_SUBS: "svc-other",
+    CHECK_DUPLICATES_ALLOWED_SUBS: "svc-vnaip-be",
+  });
+  assert.deepEqual([...loaded.subs], ["svc-other"]);
+  assert.equal(isCallerPolicyEmpty(loadCallerPolicy(names, { CHECK_DUPLICATES_ALLOWED_SUBS: "svc-vnaip-be" })), true);
+});
+
+test("callerEnvNames: tiền tố sai định dạng bị từ chối", () => {
+  for (const bad of ["", "check", "1ABC", "A-B", "A B"]) {
+    assert.throws(() => callerEnvNames(bad), RangeError, JSON.stringify(bad));
+  }
 });

@@ -4,7 +4,7 @@ import type { Server } from 'node:http';
 import express from 'express';
 import type { RequestHandler } from 'express';
 import { setupFakeCore, signToken } from '../../../__tests__/helpers/fake-core.js';
-import { loadCallerPolicy } from '../../../platform/caller-policy.js';
+import { callerEnvNames, loadCallerPolicy } from '../../../platform/caller-policy.js';
 
 /**
  * Kiểm tra cả chuỗi middleware thật của /tools/check-duplicates qua HTTP:
@@ -12,11 +12,11 @@ import { loadCallerPolicy } from '../../../platform/caller-policy.js';
  * cho tiêu chí GĐ3 "claims không khớp bị từ chối".
  *
  * sota-auth.ts đọc SOTA_CORE_ORIGIN lúc import, nên env phải được đặt trước khi
- * import tool-routes (mỗi file test chạy trong tiến trình riêng nên không ảnh hưởng test khác).
+ * import tools/index (mỗi file test chạy trong tiến trình riêng nên không ảnh hưởng test khác).
  */
 
 let core: Awaited<ReturnType<typeof setupFakeCore>>;
-let registerToolRoutes: typeof import('../../index.js').registerToolRoutes;
+let registerTools: typeof import('../../index.js').registerTools;
 let installBodyParsers: typeof import('../../../indexing/webhook-routes.js').installBodyParsers;
 
 before(async () => {
@@ -26,7 +26,7 @@ before(async () => {
   process.env.QDRANT_MOCK_MODE = 'true';
   process.env.EMBEDDING_MOCK_MODE = 'true';
   process.env.LLM_MOCK_MODE = 'true';
-  ({ registerToolRoutes } = await import('../../index.js'));
+  ({ registerTools } = await import('../../index.js'));
   ({ installBodyParsers } = await import('../../../indexing/webhook-routes.js'));
 });
 
@@ -50,9 +50,11 @@ async function withApp(
     reachedCount += 1;
     response.json({ matches: [] });
   };
-  registerToolRoutes(app, 'vnaip-dedup', {
-    callerPolicy: loadCallerPolicy(env),
-    ...(spy ? { checkDuplicates: spyHandler } : {}),
+  registerTools(app, 'vnaip-dedup', {
+    checkDuplicates: {
+      callerPolicy: loadCallerPolicy(callerEnvNames('CHECK_DUPLICATES'), env),
+      ...(spy ? { handler: spyHandler } : {}),
+    },
   });
 
   const server: Server = await new Promise((resolve) => {

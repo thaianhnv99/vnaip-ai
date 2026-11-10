@@ -3,17 +3,10 @@ import type { InvocationClaims } from "./sota-auth.js";
 import { defaultLog, type Logger } from "../shared/logger.js";
 
 /**
- * Giới hạn AI được gọi tool `check-duplicates`.
- *
- * Từ 2026-11-04 dữ liệu không còn tách theo workspace hay người gọi (chỉ tách theo
- * `type`: mỗi type một collection, xem vector-store.ts), nên không có lớp cách ly
- * người gọi ở tầng lưu trữ: ai gọi được tool là đọc được (nội dung rút gọn trong
- * prompt, kết quả là id + lý do) mọi sáng kiến của type được hỏi. Top-k theo vector không phải
- * ranh giới quyền: input do người gọi tự chọn nên họ có thể kéo bất kỳ sáng kiến nào vào top-k
- * bằng cách viết input giống nó. App lại có thể được cài vào nhiều
- * workspace Sota, nên quyền gọi phải được giới hạn ở đây, chỉ dựa trên CLAIMS ĐÃ
- * XÁC THỰC của Core (`sub`, `oid`, `wid`), không bao giờ dựa trên body hay header
- * không ký.
+ * Giới hạn AI được gọi một tool, chỉ dựa trên CLAIMS ĐÃ XÁC THỰC của Core (`sub`, `oid`,
+ * `wid`), không bao giờ dựa trên body hay header không ký. Mỗi tool có chính sách riêng, đọc
+ * từ ba biến môi trường cùng tiền tố (`<TIỀN_TỐ>_ALLOWED_SUBS|OIDS|WIDS`, xem
+ * `callerEnvNames`), nên thêm tool mới không phải sửa file này.
  *
  * Quy tắc (đóng theo mặc định):
  * - Mỗi danh sách đã cấu hình là một điều kiện BẮT BUỘC: claim tương ứng phải nằm
@@ -44,19 +37,35 @@ export type CallerDecision =
         | "wid_not_allowed";
     };
 
-export const CALLER_ENV = {
-  subs: "CHECK_DUPLICATES_ALLOWED_SUBS",
-  oids: "CHECK_DUPLICATES_ALLOWED_OIDS",
-  wids: "CHECK_DUPLICATES_ALLOWED_WIDS",
-} as const;
+/** Tên ba biến môi trường chứa danh sách người gọi được phép của một tool. */
+export interface CallerEnvNames {
+  readonly subs: string;
+  readonly oids: string;
+  readonly wids: string;
+}
+
+const ENV_PREFIX_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+
+/** `callerEnvNames("CHECK_DUPLICATES")` -> `CHECK_DUPLICATES_ALLOWED_SUBS|OIDS|WIDS`. */
+export function callerEnvNames(prefix: string): CallerEnvNames {
+  if (!ENV_PREFIX_PATTERN.test(prefix)) {
+    throw new RangeError("Tiền tố biến môi trường phải viết hoa, dạng A-Z, 0-9 và _");
+  }
+  return {
+    subs: `${prefix}_ALLOWED_SUBS`,
+    oids: `${prefix}_ALLOWED_OIDS`,
+    wids: `${prefix}_ALLOWED_WIDS`,
+  };
+}
 
 export function loadCallerPolicy(
+  names: CallerEnvNames,
   env: NodeJS.ProcessEnv = process.env,
 ): CallerPolicy {
   return {
-    subs: parseList(env[CALLER_ENV.subs]),
-    oids: parseList(env[CALLER_ENV.oids]),
-    wids: parseList(env[CALLER_ENV.wids]),
+    subs: parseList(env[names.subs]),
+    oids: parseList(env[names.oids]),
+    wids: parseList(env[names.wids]),
   };
 }
 
